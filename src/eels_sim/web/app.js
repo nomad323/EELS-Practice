@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const names = ["D10", "D01", "D20", "D11", "D02", "D30", "D21", "D12", "D03"];
 const monomials = ["u", "v", "u²", "uv", "v²", "u³", "u²v", "uv²", "v³"];
 let meta, session, controls = Object.fromEntries(names.map(n => [n, 0]));
-let lastFrame = null, running = false, dirty = false, pendingAction = "update";
+let lastFrame = null, lastImage = null, running = false, dirty = false, pendingAction = "update";
 let revision = 0, contextRevision = 0, timer = null, lockedVmax = null, failed = false;
 let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false;
 
@@ -143,7 +143,7 @@ async function pump() {
       // snapshot back into controls that the user has already moved further.
       if (context === contextRevision) {
         if (version === revision) { controls = response.controls; syncControls(); }
-        lastFrame = response;
+        lastFrame = response; lastImage = image;
         if ($("lock-intensity").checked && lockedVmax === null) lockedVmax = response.display_vmax;
         render(response, image); failed = false; $("error").textContent = "";
         if (version !== revision) $("status").textContent += " · 跟随调节中";
@@ -161,10 +161,17 @@ async function pump() {
   }
   running = false; buttonState();
 }
+function redrawPlots() {
+  // Layout changes reuse the last completed frame; no simulation or new labels.
+  if (lastFrame && lastImage) { drawSpot(lastFrame, lastImage); drawSpectrum(lastFrame); }
+}
 function setupCanvas(canvas) {
-  const c = canvas.getContext("2d"), w = canvas.width, h = canvas.height;
-  c.fillStyle = "#000"; c.fillRect(0, 0, w, h); c.font = "17px system-ui";
-  return {c, w, h, l: 78, r: w - 24, t: 30, b: h - 62};
+  const w = Math.max(1, canvas.clientWidth), h = Math.max(1, canvas.clientHeight);
+  const ratio = window.devicePixelRatio || 1, compact = w < 260;
+  canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio);
+  const c = canvas.getContext("2d"); c.setTransform(ratio, 0, 0, ratio, 0, 0);
+  c.fillStyle = "#000"; c.fillRect(0, 0, w, h); c.font = `${compact ? 9 : 12}px system-ui`;
+  return {c, w, h, compact, l: compact ? 46 : 58, r: w - 12, t: 14, b: h - (compact ? 34 : 42)};
 }
 function axis(p, xmin, xmax, ymin, ymax, ylabel, decimals = 0) {
   const {c, l, r, t, b} = p;
@@ -172,15 +179,15 @@ function axis(p, xmin, xmax, ymin, ymax, ylabel, decimals = 0) {
   c.fillStyle = "#cbd1d8"; c.textAlign = "center";
   for (let i = 0; i <= 4; i++) {
     const x = l + i * (r-l)/4;
-    c.fillText((xmin+i*(xmax-xmin)/4).toFixed(0), x, b+25);
+    c.fillText((xmin+i*(xmax-xmin)/4).toFixed(0), x, b+(p.compact ? 13 : 17));
   }
-  c.fillText("E / meV", (l+r)/2, b+51);
+  c.fillText("E / meV", (l+r)/2, b+(p.compact ? 28 : 35));
   c.textAlign = "right";
   for (let i = 0; i <= 4; i++) {
     const value = ymin+i*(ymax-ymin)/4;
-    c.fillText(Math.abs(value) >= 10000 ? value.toExponential(1) : value.toFixed(decimals), l-10, b-i*(b-t)/4+6);
+    c.fillText(Math.abs(value) >= 10000 ? value.toExponential(1).replace("e+", "e") : value.toFixed(decimals), l-6, b-i*(b-t)/4+4);
   }
-  c.save(); c.translate(20, (t+b)/2); c.rotate(-Math.PI/2); c.textAlign = "center"; c.fillText(ylabel, 0, 0); c.restore();
+  c.save(); c.translate(p.compact ? 10 : 14, (t+b)/2); c.rotate(-Math.PI/2); c.textAlign = "center"; c.fillText(ylabel, 0, 0); c.restore();
 }
 function drawSpot(frame, image) {
   const p = setupCanvas($("spot")), {c, l, r, t, b} = p;
@@ -299,7 +306,11 @@ async function init() {
   try {
     const response = await fetch("/api/meta"); if (!response.ok) throw new Error("无法加载本地模型配置");
     meta = await response.json(); session = (await post("/api/session", {})).session;
-    buildControls(); bind(); $("version").textContent = `模型版本：${meta.model_version} · NumPy 核心 + 本地 Canvas · 无外部网络请求`;
+    buildControls(); bind();
+    const plotObserver = new ResizeObserver(redrawPlots);
+    [$("spot"), $("spectrum")].forEach(canvas => plotObserver.observe(canvas));
+    window.addEventListener("resize", redrawPlots);
+    $("version").textContent = `模型版本：${meta.model_version} · NumPy 核心 + 本地 Canvas · 无外部网络请求`;
     request();
   } catch (error) { $("error").textContent = `启动失败：${error.message}`; $("status").textContent = "启动失败"; }
 }

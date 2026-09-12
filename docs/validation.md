@@ -192,3 +192,43 @@ node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chro
 本轮实际修改 7 个文件：`src/eels_sim/web/{app.js,index.html,style.css}`、`tests/browser_smoke.mjs`、`README.md`、`docs/requirements.md`、本文件。派生结果独立保存在 `processed/validation/interaction-v3/{unit-http-tests.txt,browser-test.json,browser-desktop.png,browser-narrow.png}`，未覆盖 v2 记录；已读取检查桌面及窄屏截图。
 
 物理模型、后端、原始文件、依赖和用户运行服务未改；没有安装、提交或硬件操作。测试创建的临时服务和浏览器结束后停止。正在运行的页面可强制刷新加载新前端，Windows 实体鼠标/触控板的手感仍待用户试用。
+
+## 布局改进：九项与图谱同屏（2026-09-12）
+
+用户要求避免调整下面的系数时看不到画面。本轮只更改浏览器布局、显示重绘及相应测试/说明，保留九项、滚轮确认/撤销和模拟模型。
+
+### 实现
+
+- 模式与出题设置移至顶部紧凑工具条。桌面左侧为九项单行控件，右侧并排显示光斑和能谱及三项指标；较矮桌面进一步缩小行间距。
+- 答案、场景设置、显示诊断/导出及模型说明放在调节区之后，不把下方参数挤离画面。导出按钮现位于“显示说明、诊断与导出”折叠区。
+- ≤1100 CSS 像素宽度改为上图下控，参数为三列/两列网格；图谱在参数区域滚动期间吸附于页头下方。窄屏允许滚动参数，不声称任意小窗口能同时容纳九项。
+- 活动滚轮提示移至顶部，避免覆盖最低一行或能谱。Canvas 按容器大小和 devicePixelRatio 重绘最近完成帧，轴文字不再随固定 800×550 位图一起缩小；不重新模拟，不改原始图谱、FWHM、系数或 PNG/NPZ 导出数据。显示纵横比例仍非探测器几何标定。
+
+### 复现与修正
+
+1. 修改布局之前运行新增可见性断言，在 **1366×768** 自由模式失败：D02、D30、D21、D12、D03 的滑块、数值、滚轮按钮和步长不在可见视口内。输出保留在 `before-layout.txt`。
+2. 新布局首次完整回归在 **1280×600** 练习模式失败：D03 仍超出底边。为标签/输入设置明确行高，并对较矮桌面减小行间距后通过，未取消该尺寸检查。
+3. 增加整行外框及提示遮挡检查后，390×844 的 `scrollIntoView` 将整行底边放在 **844.296875 px**（滚动偏移取整而网格盒保留小数）。诊断保留在 `layout-boundary-check.txt`。测试仅对整行外框允许 0.5 CSS 像素边界误差；实际输入、按钮、画布的视口检查与遮挡检查保持严格。
+
+### 最终实际检查
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/layout-v1
+git diff --check
+```
+
+- **24 项 Python 单元/HTTP 测试通过，1.577 s**；两项 Node 语法检查及差异空白检查通过。两份 raw 原件 SHA256 与原始基线一致。
+- **Chromium 149.0.7827.55 浏览器回归 PASS**。1920×1080、1600×900、1366×768、1280×660、1280×600 视口中，在练习模式、揭示答案且展开场景/导出设置后，九项完整控件、两幅图和 FWHM 均可见且无覆盖/横向溢出。证据为视口截图，不是整页长截图。
+- 在 **1280×600** 实际启用最后一项 D03，鼠标位于光斑上滚动后 D03=0.1，页面滚动量保持 0，九项与图谱仍可见；Esc 恢复本次起点。
+- **1024×768、720×720、390×844**：将完整 D03 行滚入视口后两幅图及 FWHM 仍可见，实际滚轮调节与 Esc 回退通过；顶部会话提示不遮挡画布或该行。
+- 连续变更视口尺寸及一次 2× 像素密度检查：画布缓冲尺寸跟随显示尺寸，重绘有内容，不新增 `/api/frame` 请求，系数、原始 PNG、谱线和指标不变。
+- 原有连续拖动、慢响应、全页滚轮、左键不穿透、Esc 快照/迟到帧、练习答案/精确补偿等检查继续通过。本次额外 80 ms 延迟测试仍在松手前显示 **6 帧**，最大在途模拟请求为 1；基线仍为 **8.002 meV**，无捕获到的 JS 异常或页面对外请求。
+
+实际修改：`src/eels_sim/web/{index.html,style.css,app.js}`、`tests/browser_smoke.mjs`、`README.md`、`docs/requirements.md`、本文件，共 7 个文件。
+
+本轮派生结果目录：`processed/validation/layout-v1/`，包含 `before-layout.txt`、`layout-boundary-check.txt`、`unit-http-tests.txt`、`browser-test.json`、`browser-desktop.png`、`browser-narrow.png`，以及七张 `layout-宽x高.png` 视口截图。已读取检查桌面、小桌面、1024 宽及 390 宽截图；旧版验证目录未覆盖。
+
+测试临时启动的本地服务和 Chromium 结束后停止；没有安装依赖、改动后端/原件、提交或操作用户服务/硬件。若用户服务仍运行，强制刷新页面即可加载新布局，无需重启后端。实际 Windows 浏览器缩放、字体差异及鼠标手感仍待用户试用；上述尺寸是浏览器内容视口的 CSS 像素，不是显示器标称分辨率。

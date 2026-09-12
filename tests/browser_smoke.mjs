@@ -43,7 +43,36 @@ async function change(id, value, event = 'change') {
 }
 async function click(id) { await evaluate(`document.getElementById(${JSON.stringify(id)}).click()`); await idle(); }
 async function centre(id) {
-  return evaluate(`(() => {const el=document.getElementById(${JSON.stringify(id)});el.scrollIntoView({block:'nearest'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,scroll:scrollY};})()`);
+  return evaluate(`(() => {
+    const el=document.getElementById(${JSON.stringify(id)});el.scrollIntoView({block:'nearest'});
+    let r=el.getBoundingClientRect();
+    if (!el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))) {
+      el.scrollIntoView({block:'end'});r=el.getBoundingClientRect();
+    }
+    return {x:r.x+r.width/2,y:r.y+r.height/2,scroll:scrollY};
+  })()`);
+}
+async function assertWorkbenchVisible(description, allControls = true) {
+  const result = await evaluate(`(() => {
+    const ids = ['spot','spectrum','fwhm', ...${allControls ? "names" : "['D03']"}.flatMap(n => ['row-'+n,'slide-'+n,'value-'+n,'wheel-toggle-'+n,'wheel-step-'+n])];
+    const headerBottom = document.querySelector('header').getBoundingClientRect().bottom;
+    const banner = document.getElementById('wheel-session'), notice = banner.getBoundingClientRect();
+    const boxes = {};
+    const hidden = ids.filter(id => {
+      const el = document.getElementById(id), r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x+r.width/2, r.y+r.height/2);
+      boxes[id] = {rect:r.toJSON(),hit:hit?.id || hit?.tagName,headerBottom};
+      const coveredByNotice = !banner.hidden && r.left < notice.right && r.right > notice.left && r.top < notice.bottom && r.bottom > notice.top;
+      // scrollIntoView rounds scroll offsets, but grid row boxes can retain
+      // fractions of a CSS pixel. Allow only the row's outer padding this error;
+      // actual controls/canvases and overlay checks remain strict.
+      const edge = id.startsWith('row-') ? 0.5 : 0;
+      return r.width <= 0 || r.height <= 0 || r.left < -edge || r.top < headerBottom-edge || r.right > innerWidth+edge || r.bottom > innerHeight+edge || !el.contains(hit) || coveredByNotice;
+    });
+    return {hidden, boxes:Object.fromEntries(hidden.map(id => [id,boxes[id]])), width: innerWidth, height: innerHeight, overflow: document.documentElement.scrollWidth > innerWidth};
+  })()`);
+  assert.deepEqual(result.hidden, [], `${description}: controls and both plots must be visible without occlusion (${result.width}×${result.height}), ${JSON.stringify(result.boxes)}`);
+  assert.equal(result.overflow, false, `${description}: no horizontal overflow`);
 }
 async function doubleClick(id) {
   const {x, y} = await centre(id);
@@ -98,6 +127,8 @@ try {
   await command('Emulation.setDeviceMetricsOverride', {width: 1600, height: 1150, deviceScaleFactor: 1, mobile: false});
   await command('Page.navigate', {url: `http://127.0.0.1:${port}/`}); await idle();
   assert.equal(await evaluate(`document.querySelectorAll('.coefficient').length`), 9);
+  await command('Emulation.setDeviceMetricsOverride', {width: 1366, height: 768, deviceScaleFactor: 1, mobile: false});
+  await assertWorkbenchVisible('desktop free mode');
   const baseline = Number(await evaluate(`document.getElementById('fwhm').textContent`));
   assert.ok(Math.abs(baseline-8) < 0.2, `baseline=${baseline}`);
   await change('slide-D01', 40, 'input');
@@ -149,7 +180,9 @@ try {
   // Explicit activation starts a transaction: global wheel capture, left-click
   // commits, Escape restores the activation snapshot (not zero or last frame).
   await command('Emulation.setDeviceMetricsOverride', {width: 1600, height: 900, deviceScaleFactor: 1, mobile: false});
-  await evaluate(`document.getElementById('value-D10').focus()`);
+  // Expand ancillary content to make page scrolling possible even when the
+  // compact workbench itself now fits entirely in this tall viewport.
+  await evaluate(`document.getElementById('scene-settings').open=true;document.getElementById('value-D10').focus()`);
   const pageScroll = await wheelAt('value-D10', 120);
   assert.equal(await evaluate('controls.D10'), 0, 'inactive focused number must not spin natively');
   assert.ok(pageScroll.after > pageScroll.before, 'inactive wheel still scrolls the page');
@@ -246,6 +279,7 @@ try {
   assert.equal(await evaluate('wheelTarget'), null, 'window blur safely ends capture');
   assert.equal(await evaluate('controls.D10'), 0.5, 'blur preserves current adjustment');
   await pointerClick('zero');
+  await evaluate(`document.getElementById('scene-settings').open=false;window.scrollTo(0,0)`);
   // A scene/mode boundary still discards an obsolete in-flight frame.
   await evaluate(`window.fetch=window.__delayedFetch;const el=document.getElementById('slide-D10');el.value=30;el.dispatchEvent(new Event('input',{bubbles:true}));`);
   await waitFor(() => evaluate('running'), 'request in flight before switching mode');
@@ -270,22 +304,60 @@ try {
   assert.equal(await evaluate(`Object.values(controls).every(v => v === 0)`), true);
   await change('difficulty', 'hard'); // Does not change the active question until new.
   await click('new-question'); await click('reveal');
-  await pointerClick('wheel-toggle-D10'); // Show active capture and the instruction banner.
-  await command('Emulation.setDeviceMetricsOverride', {width: 1600, height: 1150, deviceScaleFactor: 1, mobile: false});
-  await evaluate('window.scrollTo(0,0)');
+  // Revealed answers and expanded setup must not push the tuning controls down.
+  await evaluate(`document.getElementById('scene-settings').open=true;document.getElementById('display-info').open=true`);
   await mkdir(join(root, artifactDirectory), {recursive: true});
-  const screenshot = await command('Page.captureScreenshot', {format: 'png', captureBeyondViewport: true});
+  const layoutSizes = [[1920,1080],[1600,900],[1366,768],[1280,660],[1280,600]];
+  const beforeResize = await evaluate(stateExpression);
+  const frameRequestCount = () => requests.filter(url => url.endsWith('/api/frame')).length;
+  const requestsBeforeResize = frameRequestCount();
+  for (const [width, height] of layoutSizes) {
+    await command('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: false});
+    await evaluate('window.scrollTo(0,0);new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await assertWorkbenchVisible('desktop practice with answers and scene expanded');
+    assert.equal(await evaluate(`[document.getElementById('spot'),document.getElementById('spectrum')].every(c => c.width === Math.round(c.clientWidth*devicePixelRatio) && c.height === Math.round(c.clientHeight*devicePixelRatio) && c.getContext('2d').getImageData(0,0,c.width,c.height).data.some((v,i) => i%4!==3 && v>0))`), true, 'resize redraws both canvases at the displayed resolution');
+    const shot = await command('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
+    await writeFile(join(root, artifactDirectory, `layout-${width}x${height}.png`), Buffer.from(shot.data, 'base64'));
+  }
+  await command('Emulation.setDeviceMetricsOverride', {width: 1366, height: 768, deviceScaleFactor: 2, mobile: false});
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await assertWorkbenchVisible('high-DPI desktop');
+  assert.equal(await evaluate(`[document.getElementById('spot'),document.getElementById('spectrum')].every(c => c.width === Math.round(c.clientWidth*2) && c.height === Math.round(c.clientHeight*2))`), true, 'high-DPI backing buffers follow the CSS layout');
+  await command('Emulation.setDeviceMetricsOverride', {width: 1280, height: 600, deviceScaleFactor: 1, mobile: false});
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  assert.equal(await evaluate(stateExpression), beforeResize, 'resizing does not alter simulation, controls or metrics');
+  assert.equal(frameRequestCount(), requestsBeforeResize, 'resizing does not request a new simulation');
+  // Actually tune the last coefficient without scrolling at laptop size.
+  await pointerClick('wheel-toggle-D03');
+  const lastRowScroll = await wheelAt('spot', -120);
+  assert.equal(await evaluate('controls.D03'), 0.1);
+  assert.equal(lastRowScroll.before, 0);
+  assert.equal(lastRowScroll.after, 0);
+  await assertWorkbenchVisible('last coefficient active, no scrolling');
+  const screenshot = await command('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
   await writeFile(join(root, artifactDirectory, 'browser-desktop.png'), Buffer.from(screenshot.data, 'base64'));
-  await command('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 1, mobile: false});
-  assert.equal(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), true, 'no horizontal page overflow');
-  const mobile = await command('Page.captureScreenshot', {format: 'png'});
-  await writeFile(join(root, artifactDirectory, 'browser-narrow.png'), Buffer.from(mobile.data, 'base64'));
+  await escape();
+  // Smaller windows may need control scrolling; both plots remain pinned while
+  // the entire D03 row is brought into view, rather than disappearing above it.
+  for (const [width,height] of [[1024,768],[720,720],[390,844]]) {
+    await command('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: false});
+    await evaluate(`document.getElementById('row-D03').scrollIntoView({block:'end'});new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await assertWorkbenchVisible('narrow last row and sticky plots', false);
+    await pointerClick('wheel-toggle-D03');
+    const held = await wheelAt('spot', -120);
+    assert.equal(held.after, held.before);
+    assert.equal(await evaluate('controls.D03'), 0.1);
+    await assertWorkbenchVisible('narrow active last row and sticky plots', false);
+    const shot = await command('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
+    await writeFile(join(root, artifactDirectory, width === 390 ? 'browser-narrow.png' : `layout-${width}x${height}.png`), Buffer.from(shot.data, 'base64'));
+    await escape();
+  }
   assert.deepEqual(exceptions, []);
   const external = requests.filter(url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:'));
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
-    drag_frames_before_release: duringDrag.length,
-    checks: ['nine controls', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'button-only wheel activation', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
+    checks: ['nine controls', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'button-only wheel activation', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'sticky plots during narrow last-row tuning', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
     screenshots: [`${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();
