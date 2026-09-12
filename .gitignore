@@ -5,6 +5,12 @@ processed/
 # Optional temporary execution state
 PLAN.md
 
+# Python-generated caches / local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
 # Local editor and temporary files
 .vscode/
 .idea/

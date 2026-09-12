@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EELS · 像差调节练习器</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<header><div><span class="eyebrow">OFFLINE · EELS LAB</span><h1>像差调节练习器</h1></div><div class="badge">合成模型 · 无仪器连接</div></header>
+<p id="wheel-session" class="wheel-session" role="status" hidden></p>
+<main>
+  <aside>
+    <section class="panel">
+      <h2>调节台</h2>
+      <label>模式<select id="mode"><option value="free">自由探索 · 直接调整残余像差</option><option value="practice">盲调练习 · 调整补偿量</option></select></label>
+      <p id="mode-help" class="hint">九项可任意叠加。系数单位：meV / 归一化角度幂。</p>
+      <div id="practice" hidden>
+        <div class="two"><label>难度<select id="difficulty"><option value="easy">初级</option><option value="medium" selected>中级</option><option value="hard">高级</option></select></label><label>隐藏项数<select id="term-count"><option value="1">单项</option><option value="3">三项</option><option value="9" selected>九项</option></select></label></div>
+        <label>题目种子<input id="seed" type="number" min="0" max="4294967295" step="1" value="42"></label>
+        <div class="buttons"><button id="new-question">按种子出题</button><button id="random-question">随机新题</button><button id="retry">重试本题</button></div>
+        <p id="question-info" class="hint"></p>
+      </div>
+      <p class="hint">拖动时图谱持续更新。先设置步长，再点击该行“滚轮调节”：鼠标在页面任意位置滚动都只调这一项，不翻动网页。左键保留并停止；Esc 撤销本次调整。</p>
+      <div id="sliders"></div>
+      <div class="buttons"><button id="zero">全部归零</button><button id="reveal" hidden>查看答案 / 差距</button></div>
+      <p class="hint">Dij 对应 uⁱvʲ，无阶乘。量程 ±120 是练习范围，不是设备控制限值。</p>
+    </section>
+    <details class="panel"><summary>场景与采样</summary>
+      <p class="hint">默认总响应 FWHM = 8 meV。以下为合成情景参数，不是真实 Cc 或仪器标定。</p>
+      <div class="two">
+        <label>横向孔径比例<input id="pupil-x" type="number" min="0.2" max="1.3" step="0.1" value="1"></label>
+        <label>纵向孔径比例<input id="pupil-y" type="number" min="0.2" max="1.3" step="0.1" value="1"></label>
+        <label>角接受窗口 |u| ≤<input id="angular-slit" type="number" min="0.05" max="1.3" step="0.05" value="1.3"></label>
+        <label>纵向 PSF σ<input id="y-psf" type="number" min="0" max="0.2" step="0.01" value="0"></label>
+        <label>额外能量 σ / meV<input id="extra-sigma" type="number" min="0" max="20" step="0.5" value="0"></label>
+        <label>入射总计数<input id="counts" type="number" min="100" max="10000000" step="100" value="1000000"></label>
+        <label>背景 / 每像素<input id="background" type="number" min="0" max="20" step="0.1" value="0"></label>
+        <label>噪声种子<input id="noise-seed" type="number" min="0" max="4294967295" step="1" value="17"></label>
+      </div>
+      <label class="check"><input id="poisson" type="checkbox"> Poisson 计数噪声（固定种子）</label>
+      <label>能量视野<select id="field"><option value="40">±40 meV · 精细观察</option><option value="120" selected>±120 meV</option><option value="240">±240 meV</option><option value="480">±480 meV</option></select></label>
+      <label>采样档位<select id="quality"><option value="preview">预览 · 16,384 光线 / 801 能量像素</option><option value="normal" selected>标准 · 65,536 光线 / 801 能量像素</option><option value="high">高质量 · 262,144 光线 / 1601 能量像素</option></select></label>
+      <p class="hint">角接受窗口不是能量选择狭缝。增加额外展宽后，最佳峰宽可以大于 8 meV。</p>
+      <button id="reset-scene">恢复默认场景</button>
+    </details>
+  </aside>
+  <div class="workspace">
+    <section class="metrics">
+      <div><span>积分 ZLP · FWHM</span><strong id="fwhm">—</strong><small>meV · 原始线性计数测量</small></div>
+      <div><span>谱线质心</span><strong id="centroid">—</strong><small>meV · 峰移不等于展宽</small></div>
+      <div><span>RMS 能量宽度</span><strong id="rms">—</strong><small>meV · 辅助关注长尾</small></div>
+    </section>
+    <section class="panel images">
+      <div class="section-head"><h2>探测器光斑与积分能谱</h2><span id="status" role="status">初始化…</span></div>
+      <div class="display-controls"><label>显示 γ<input id="gamma" type="range" min="0.15" max="2" step="0.05" value="0.5"><output id="gamma-value">0.50</output></label><label class="check"><input id="lock-intensity" type="checkbox">锁定当前亮度上限</label></div>
+      <div class="plots">
+        <div><canvas id="spot" width="800" height="550" aria-label="黑白能量—角度光斑"></canvas><p class="hint">横轴 E / meV；纵轴归一化角度。黑 = 零计数，白 = 高计数。纵横比例仅为显示布局。</p></div>
+        <div><canvas id="spectrum" width="800" height="550" aria-label="沿纵向积分的 ZLP 能谱"></canvas><p class="hint">沿全部显示纵向像素求和。虚线为扣除已知合成背景后的半峰高；无隐藏平滑或高斯拟合。</p></div>
+      </div>
+      <p id="diagnostics" class="hint"></p><p class="hint">连续调节时，图谱与答案表显示最近完成的同一帧；控件保留当前输入，停止调节后自动追上最终值。</p><div id="warnings" role="alert"></div>
+      <div class="buttons"><button id="save-png">保存黑白光斑 PNG</button><button id="export">导出原始 NPZ（含答案标签）</button></div>
+    </section>
+    <section id="feedback" class="panel" hidden><h2>答案与补偿差距</h2><p id="score"></p><div class="table-wrap"><table><thead><tr><th>项</th><th>初始 a</th><th>当前 c</th><th>答案 −a</th><th>残余 a+c</th></tr></thead><tbody id="answer-rows"></tbody></table></div><p class="hint">这是与生成标签的差距，不是实验测量误差。对称孔径可能存在图像等价解，单张图不保证唯一反演九个参数。</p></section>
+    <details class="panel"><summary>模型说明与练习方法</summary><p>自由模式从零开始，先单独观察 D01 的倾斜、D02 的弯曲，再叠加其他项。练习模式隐藏初始像差，滑块是你施加的补偿量，目标是让残余接近零。</p><p>无像差时是具有有限能量厚度的竖直带，而不是二维点。8 meV 是有效总能量响应（高斯 σ≈3.397 meV），不是色差系数 Cc。源、真实能角色差耦合、衍射和设备控制尚未标定；不能用本模型直接诊断仪器。</p><p>只追求最小 FWHM 可能遗漏长尾或多峰；同时观察形状、RMS 宽度和按需揭示的系数残差。自动亮度适合看形状，锁定亮度才适合比较峰值强弱。</p><p id="version"></p></details>
+    <p id="error" role="alert"></p>
+  </div>
+</main>
+</body>
+</html>

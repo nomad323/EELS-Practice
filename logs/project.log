@@ -1,1 +1,5 @@
 [2026-09-12 14:35:59 +0800] CREATE project=EELS_laser_spot type=programming
+[2026-09-12 14:40:32 +0800] IMPORT project=EELS_laser_spot destination=raw/20260912 files=2
+    xiangcha.py
+    微信图片_20260906202340_284_99.jpg
+

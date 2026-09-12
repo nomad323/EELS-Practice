@@ -1,14 +1,117 @@
-# Programming project
+# EELS 像差调节练习器
 
-Open with `research` → Programming → this project's slug, or `research <slug> --pi`.
+在 WSL2 中运行、用 Windows 本地浏览器练习九项像差补偿。**离线合成模型，不连接仪器，不是已标定的真实色差/校正器模型。**
 
-This is a language-neutral scaffold, not a working application. No dependencies are installed and no tests or hardware acceptance have been run.
+## 启动
 
-- Inspect the actual code/stack before selecting source, test, build, and run conventions.
-- Record agreed scope and acceptance criteria in [requirements](docs/requirements.md).
-- Record real commands, environment, results, limitations, and rollout/rollback evidence in [validation](docs/validation.md).
-- Add decision records under `docs/decisions/` when useful. Keep ordinary software documentation here rather than in scientific state/log files.
-- Source belongs in this repository, not its matching inbox. Original sample data may be explicitly imported later; back up originals separately and keep derived outputs separate.
-- Instrument-facing work starts offline with mocks/replay/simulation. Source adoption, dependency installation, deployment, hardware trials, and commits are separate approval decisions.
+在项目根目录的 WSL 终端执行：
 
-Use `research-plan init` only when the owner chooses an execution checkpoint; no plan is created by setup.
+```bash
+python3 run.py
+```
+
+保持终端运行，在 Windows 浏览器打开 **http://localhost:8765**。`Ctrl+C` 停止。端口占用时：
+
+```bash
+python3 run.py --port 8766
+```
+
+仅绑定 `127.0.0.1`，不自动打开浏览器或向局域网公开。应用不使用 CDN/外部请求。若 Windows 无法访问，先在 WSL 内检查：
+
+```bash
+curl --noproxy '*' http://127.0.0.1:8765/api/meta
+```
+
+若 WSL 内可用、Windows 不可用，请检查 WSL2 的 localhost 转发、浏览器代理及本机防火墙；不要直接改为 `0.0.0.0` 或开放外网端口。Windows→WSL2 的实际转发仍需在你的机器上验收。
+
+运行依赖是 Python ≥3.10、NumPy、Pillow（见 `requirements.txt`）。本次实际使用 Python 3.14.4 / NumPy 2.3.5 / Pillow 12.1.1，已有依赖，没有进行安装。浏览器界面使用原生 JS/Canvas，不需要 Node、npm、Matplotlib 或 Flask；Node 仅用于可选浏览器测试。
+
+## 使用
+
+- **自由探索**：拖动九个滑块或输入数值，直接改变残余像差。拖动过程中持续更新光斑、能谱与峰宽，无需松手。可同时叠加，`↺` 单项归零，或全部归零。
+- **滚轮微调**：先设置步长，再点击该行的 **“滚轮调节”按钮**（不再双击启用）。启用后，鼠标无论停在光斑、其他参数还是步长框上，滚轮都只改变选中的那一项，网页不随滚轮翻动；上滚增加、下滚减少。高亮行及浮动提示显示当前调节项。
+  - **左键点击页面任意位置**：保留本次结果并停止。这个点击只用于停止，不会顺带触发归零、换题或再次启用按钮；需要操作其他控件时再点一次。
+  - **Esc**：撤销从本次点击启用开始的调整，恢复启用时的系数，并同步恢复对应光斑、能谱、峰宽及答案残差；不是恢复到零，也不会撤销之前已经左键确认的调整。
+  - 每行独立步长，默认 `0.1 meV`，范围 `0.01～120`、精度 `0.01`；每个有效垂直滚轮事件一步，系数限制在 ±120。步长在本页保留，刷新后恢复默认；需要修改步长时先结束调节。非法步长不会执行调节。
+  - 调节期间全页拦截滚轮，水平及 Ctrl/Meta+滚轮不滚页、不缩放，也不改变系数。停止后恢复正常滚动/缩放。切换窗口或显式变更模式/场景时保留当前值并安全结束调节。
+- **盲调练习**：随机隐藏初始像差 `a`，滑块是你的补偿 `c`，图像对应 `a+c`。选择单项/三项/九项与难度，按种子出题或随机新题；重试保留原题、清零补偿并隐藏答案。
+- **查看答案 / 差距**：显示初始值、当前补偿、理想补偿 `−a`、残余，以及按 ±120 meV 量程归一化的 RMS 误差。默认不返回隐藏系数；这不是防作弊系统。
+- **光斑与谱线**：黑底白亮信号；积分能谱、FWHM、半高交点、质心与 RMS 宽度同屏。无残余像差的默认总 FWHM 约 **8 meV**，不是零宽度或二维点光斑。
+- **显示**：默认 γ=0.5 提升弱信号可见性；γ=1 为线性。自动亮度用于看形状，锁定亮度用于比较峰值。显示设置不修改计数或 FWHM。
+- **场景与采样**：孔径比例、角接受窗口、额外能量模糊、纵向 PSF、计数/背景/Poisson 噪声、视野和质量档位。采样与噪声种子固定，调节不重新抽题。
+- **导出**：PNG 是显示灰度图；NPZ 是原始观测和完整标签。练习模式导出会明确提示包含答案。浏览器自行选择下载位置。
+
+连续调节时，控件始终保留当前输入，图像、谱线、峰宽及答案表共同显示最近完成的一帧；停止调节后自动追上最终值。每次仅有一个模拟请求，合并中间输入，不排队计算每个鼠标事件，也不降低当前选定的采样质量。实际刷新速度受计算、浏览器和 WSL 转发影响，不承诺固定帧率。未追上最终输入前禁用导出，避免保存不匹配的状态。
+
+视野裁切、多段半高区或明显低信噪比时 FWHM 会显示 `—` 并说明原因。不要仅用 FWHM 判断所有像差都消除了；强长尾可能同时有较窄半高宽。缩小视野可能裁切信号，而不是改善分辨率。
+
+## 约定与适用范围
+
+角坐标 `u,v` 相对于参考孔径归一化：
+
+| 单项 | 系数 | 单项 | 系数 | 单项 | 系数 |
+|---|---|---|---|---|---|
+| u | D10 | v | D01 | uv | D11 |
+| u² | D20 | v² | D02 | u³ | D30 |
+| u²v | D21 | uv² | D12 | v³ | D03 |
+
+`E = Σ Dij uⁱvʲ + ε`，`y = v`；系数无阶乘，能量等效单位为 meV，未标定成实际 rad 或设备旋钮。横纵单位不同，界面纵横比例是能量—角度图布局，不是真实探测器像素几何。
+
+`ε` 默认是总 FWHM=8 meV 的高斯有效响应（σ≈3.397 meV）。通过固定卷积边缘化能量分布，避免重复能量采样造成闪烁；另有亚像素落点和离散能量像素。8 meV **不是 Cc**，也没有将源、色差、探测器各自再加一个 8 meV。额外能量 σ 与基线按方差合成，因此额外展宽后最佳峰宽可以大于 8 meV。
+
+角接受窗口只选择 `|u|`，**不是能量选择狭缝**。原脚本的五维光线/能量狭缝模型单独保存在 `legacy.py`。真实能角色差耦合、有限源及完整传递矩阵、衍射、校正器耦合和实测标定尚未实现。详见 [需求与边界](docs/requirements.md)、[模型/架构决定](docs/decisions/0001-effective-model-and-local-ui.md)。
+
+对称孔径存在系数图像等价解：例如同时反转全部 u 奇次幂项的符号。单张光斑不保证唯一反演九项系数，后续神经网络需考虑这一点；不能把生成标签误差当作实验误差。
+
+## 无界面调用 / 神经网络数据准备
+
+在根目录设置 `PYTHONPATH=src`，即可独立调用，不启动 HTTP 或 GUI：
+
+```bash
+PYTHONPATH=src python3 - <<'PY'
+from eels_sim import Config, simulate
+from eels_sim.training import new_exercise
+
+config = Config(poisson=True, noise_seed=17)
+question = new_exercise(seed=42, difficulty='medium', term_count=9, config=config)
+r = simulate(question.residual({'D01': 3.5}), config)
+print(r.counts.shape, r.metrics)
+# r.counts: 观测；r.expected: 期望计数；r.spectrum == r.counts.sum(axis=0)
+PY
+```
+
+可用 `eels_sim.presentation.export_npz(result, labels)` 获得 NPZ 字节；由调用者明确选择保存位置。读取浏览器导出文件：
+
+```python
+import json
+import numpy as np
+
+with np.load('eels-sample.npz', allow_pickle=False) as sample:
+    counts = sample['counts']            # 行: y 升序；列: E 升序
+    spectrum = sample['spectrum']
+    metadata = json.loads(str(sample['metadata_json']))
+```
+
+同时保存能量坐标、纵向坐标、期望计数、配置、模型版本和练习标签。NPZ 不包含 pickle 对象；PNG 为方便显示已上下翻转，且受 gamma/归一化影响，不能替代原始训练数据。以后按题目/潜在状态划分训练与验证集，避免同题不同噪声泄漏；当前不包含网络训练。
+
+## 检查与回退
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+node --check src/eels_sim/web/app.js            # 可选，需要已有 Node
+node tests/browser_smoke.mjs /path/to/chrome   # 可选，需要 Node ≥22 和已有 Chromium
+```
+
+浏览器测试只临时启动本地服务和浏览器，结束后停止；生成 `processed/validation/` 截图。可在 Chromium 路径后追加输出目录，例如 `processed/validation/interaction-v3`，以保留旧验证图。测试包含连续拖动、慢响应下控件不回退、按钮启用与全页滚轮捕获、左键保留且不误触其他控件、Esc 恢复本次快照，以及撤销后旧响应不能覆盖结果。它使用临时浏览器配置目录，不复用你的浏览器资料，不下载依赖。
+
+实际命令、结果、失败修复和未验证项见 [验证记录](docs/validation.md)。原始 `raw/20260912/xiangcha.py` 与截图保持不变；`src/eels_sim/legacy.py` 保存其默认数值行为和任意单位约定，用作回归/对照，而不是把旧参数标成 meV。停止新服务即可退出新程序；没有修改原始配置、系统服务或仪器。未进行提交、部署或硬件验收。
+
+## 文件布局
+
+- `src/eels_sim/model.py`：九项基函数、采样、前向成像、谱宽分析。
+- `src/eels_sim/training.py`：题目、补偿、答案与残差。
+- `src/eels_sim/presentation.py`：黑白 PNG、无损 NPZ 导出。
+- `src/eels_sim/server.py`、`web/`：回环 HTTP 和浏览器界面。
+- `src/eels_sim/legacy.py`：原默认算法回归路径。
+- `tests/`：数值、HTTP 与实际浏览器检查。
+- `processed/`：忽略入库的派生示例/验证图，与 `raw/` 原件分离。
