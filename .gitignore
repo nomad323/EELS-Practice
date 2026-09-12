@@ -1,0 +1,13 @@
+# Original/derived data if used; originals require separate backup
+raw/
+processed/
+
+# Optional temporary execution state
+PLAN.md
+
+# Local editor and temporary files
+.vscode/
+.idea/
+*.tmp
+*.swp
+*~
