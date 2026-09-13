@@ -4,8 +4,10 @@ import math
 
 import numpy as np
 
-from .model import Config, CONTROL_LIMIT, MAX_ORDER, POWERS, TERMS, coefficients, terms_through
+from .model import Config, CONTROL_LIMIT, MAX_ORDER, TERMS, coefficients, terms_through
 
+# Version the question distribution separately from the unchanged forward model.
+GENERATOR_VERSION = "eels-exercise-per-term-1"
 DIFFICULTY = {"easy": 20.0, "medium": 45.0, "hard": 90.0}
 
 
@@ -17,6 +19,7 @@ class Exercise:
     initial: dict
     creation_config: dict
     max_order: int = 3
+    generator_version: str = GENERATOR_VERSION
 
     def residual(self, controls):
         c = checked_controls(controls, self.max_order)
@@ -29,6 +32,7 @@ class Exercise:
         initial = coefficients(self.initial)
         return {"seed": self.seed, "difficulty": self.difficulty, "term_count": self.term_count,
                 "max_order": self.max_order, "eligible_terms": eligible,
+                "generator_version": self.generator_version,
                 "creation_config": self.creation_config, "initial": initial, "controls": c,
                 "answer": {name: -initial[name] for name in TERMS},
                 "residual": residual,
@@ -47,7 +51,14 @@ def checked_controls(values, max_order=MAX_ORDER):
 
 
 def new_exercise(seed, difficulty="medium", term_count=9, config=None, max_order=3):
+    """Draw each active |Dij| in [0.35, 1] × difficulty, without a shared budget.
+
+    Scene settings affect the image, not label strength. Large exercises may
+    exceed the displayed field; the forward model reports that clipping.
+    """
     config = Config() if config is None else config
+    if not isinstance(config, Config):
+        raise ValueError("config 应为 Config")
     if type(seed) is not int or not 0 <= seed < 2**32:
         raise ValueError("题目种子应为 0…4294967295 的整数")
     eligible = terms_through(max_order)
@@ -57,13 +68,7 @@ def new_exercise(seed, difficulty="medium", term_count=9, config=None, max_order
     selected = rng.choice(len(eligible), size=term_count, replace=False)
     initial = coefficients()
     for index in selected:
-        initial[TERMS[index]] = float(rng.choice((-1, 1)) * rng.uniform(0.35, 1) * DIFFICULTY[difficulty])
-    # Triangle inequality bounds displacement for this pupil. Reserve room for
-    # six-sigma energy spread, including user-selected extra broadening.
-    max_u = min(config.pupil_x, config.angular_slit_half)
-    bound = sum(abs(initial[name])*max_u**i*config.pupil_y**j for name, (i, j) in zip(TERMS, POWERS))
-    field_fraction = {"easy": 0.20, "medium": 0.40, "hard": 0.65}[difficulty]
-    budget = max(2, min(config.energy_half_range_mev*field_fraction, config.energy_half_range_mev-6*config.sigma_mev))
-    factor = min(1.0, budget/bound) if bound else 1.0
-    initial = {name: round(value*factor, 2) for name, value in initial.items()}
+        initial[TERMS[index]] = round(float(rng.choice((-1, 1)) * rng.uniform(0.35, 1) * DIFFICULTY[difficulty]), 2)
+    # Do not shrink the whole vector by its summed displacement: that dilutes
+    # each term as more are enabled, especially with twenty mixed-order terms.
     return Exercise(seed, difficulty, term_count, initial, asdict(config), max_order)

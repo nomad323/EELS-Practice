@@ -462,30 +462,58 @@ try {
       await escape();
     }
   }
-  // A refreshed frontend pointed at a still-running old backend must give an
-  // actionable restart message, not send unsupported 20-term frame requests.
-  const beforeOldBackend = frameRequestCount();
-  const oldMeta = await command('Page.addScriptToEvaluateOnNewDocument', {source: `
-    const nativeFetch = window.fetch;
-    window.fetch = async (...args) => {
-      const response = await nativeFetch(...args);
-      if (args[0] !== '/api/meta') return response;
-      const meta = await response.json(); meta.terms = meta.terms.slice(0,9);
-      delete meta.max_order; delete meta.powers; delete meta.default_practice_order;
-      return new Response(JSON.stringify(meta), {headers:{'Content-Type':'application/json'}});
-    };`});
-  await command('Page.navigate', {url:`http://127.0.0.1:${port}/`});
-  await waitFor(() => evaluate(`document.getElementById('error')?.textContent.includes('后端版本过旧')`), 'old backend compatibility message');
-  assert.match(await evaluate(`document.getElementById('error').textContent`), /python3 run.py/);
-  assert.equal(frameRequestCount(), beforeOldBackend, 'incompatible backend receives no frame requests');
-  await command('Page.removeScriptToEvaluateOnNewDocument', {identifier:oldMeta.identifier});
+  // Every one of twenty active terms gets the selected amplitude range.
+  await command('Emulation.setDeviceMetricsOverride', {width:1366,height:768,deviceScaleFactor:1,mobile:false});
+  await evaluate('window.scrollTo(0,0)');
+  for (const [level,low,high] of [['easy',7,20],['medium',15.75,45],['hard',31.5,90]]) {
+    await change('difficulty', level); await click('new-question'); await click('reveal');
+    assert.equal(await evaluate('lastFrame.question.generator_version'), 'eels-exercise-per-term-1');
+    assert.equal(await evaluate(`Object.values(lastFrame.feedback.initial).every(v => Math.abs(v)>=${low} && Math.abs(v)<=${high})`), true, 'no shared budget dilutes twenty-term strength');
+    if (level === 'medium') {
+      assert.ok(await evaluate('lastFrame.metrics.rms_mev > 20'), 'seed 42 twenty-term medium is no longer near baseline');
+      const shot = await command('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+      await writeFile(join(root, artifactDirectory, 'difficulty-medium-20.png'), Buffer.from(shot.data,'base64'));
+    }
+  }
+  const strongQuestion = await evaluate('JSON.stringify({question:lastFrame.question,feedback:lastFrame.feedback})');
+  await change('field', 40);
+  assert.ok(await evaluate('lastFrame.clipped_fraction > 0.001'));
+  assert.equal(await evaluate('lastFrame.metrics.fwhm_mev'), null);
+  assert.match(await evaluate(`document.getElementById('warnings').textContent`), /扩大能量视野/);
+  await change('field', 240);
+  assert.equal(await evaluate('JSON.stringify({question:lastFrame.question,feedback:lastFrame.feedback})'), strongQuestion, 'widening the field does not change question, answer or score');
+  assert.ok(await evaluate('lastFrame.clipped_fraction < 0.001'));
+  assert.doesNotMatch(await evaluate(`document.getElementById('warnings').textContent`), /扩大能量视野/);
+  // A refreshed frontend must reject both nine-term and twenty-term backends
+  // still using the old shared-budget generator, with an actionable message.
+  for (const legacyKind of ['nine-term', 'shared-budget']) {
+    const beforeOldBackend = frameRequestCount();
+    const oldMeta = await command('Page.addScriptToEvaluateOnNewDocument', {source: `
+      const nativeFetch = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await nativeFetch(...args);
+        if (args[0] !== '/api/meta') return response;
+        const meta = await response.json();
+        delete meta.generator_version;
+        if (${JSON.stringify(legacyKind)} === 'nine-term') {
+          meta.terms = meta.terms.slice(0,9);
+          delete meta.max_order; delete meta.powers; delete meta.default_practice_order;
+        }
+        return new Response(JSON.stringify(meta), {headers:{'Content-Type':'application/json'}});
+      };`});
+    await command('Page.navigate', {url:`http://127.0.0.1:${port}/`});
+    await waitFor(() => evaluate(`document.getElementById('error')?.textContent.includes('后端版本过旧')`), 'old backend compatibility message');
+    assert.match(await evaluate(`document.getElementById('error').textContent`), /python3 run.py/);
+    assert.equal(frameRequestCount(), beforeOldBackend, 'incompatible backend receives no frame requests');
+    await command('Page.removeScriptToEvaluateOnNewDocument', {identifier:oldMeta.identifier});
+  }
   assert.deepEqual(exceptions, []);
   const external = requests.filter(url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:'));
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
     drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
-    checks: ['20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'button-only wheel activation', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'sticky plots during narrow last-row tuning', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
-    screenshots: [`${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
+    checks: ['per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'button-only wheel activation', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'sticky plots during narrow last-row tuning', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    screenshots: [`${artifactDirectory}/difficulty-medium-20.png`, `${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();
   for (const child of [browser, service]) {

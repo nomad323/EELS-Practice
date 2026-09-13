@@ -9,6 +9,7 @@ import numpy as np
 
 from eels_sim.model import TERMS, coefficients
 from eels_sim.server import Application, LocalServer
+from eels_sim.training import GENERATOR_VERSION
 
 
 class ApplicationTests(unittest.TestCase):
@@ -42,15 +43,18 @@ class ApplicationTests(unittest.TestCase):
         request = dict(self.request, max_order=5, term_count=20)
         first = self.app.dispatch('/api/frame', dict(request, action='new'))
         self.assertEqual(first['question']['max_order'], 5)
+        self.assertEqual(first['question']['generator_version'], GENERATOR_VERSION)
         self.assertNotIn('feedback', first)
         self.assertEqual(len(first['controls']), 20)
         revealed = self.app.dispatch('/api/frame', dict(request, action='reveal'))
         feedback = revealed['feedback']
-        self.assertTrue(all(v != 0 for v in feedback['initial'].values()))
+        self.assertTrue(all(15.75 <= abs(v) <= 45 for v in feedback['initial'].values()))
+        self.assertEqual(feedback['generator_version'], GENERATOR_VERSION)
         with np.load(io.BytesIO(self.app.dispatch('/api/export', {'session': self.token})), allow_pickle=False) as data:
             metadata = json.loads(str(data['metadata_json']))
             self.assertEqual(metadata['effective_coefficients'], feedback['initial'])
             self.assertEqual(metadata['labels']['max_order'], 5)
+            self.assertEqual(metadata['labels']['generator_version'], GENERATOR_VERSION)
             np.testing.assert_array_equal(data['spectrum'], data['counts'].sum(axis=0))
         # Pending selectors do not replace a question on update/reveal/retry.
         staged = dict(request, max_order=1, term_count=2)
@@ -81,6 +85,26 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(free['controls']['D22'], 8)
         self.assertEqual(free['controls']['D05'], -9)
         self.assertNotIn('question', free)
+
+    def test_clipped_practice_can_widen_field_without_changing_answer(self):
+        request = dict(self.request, max_order=5, term_count=20, difficulty='hard',
+                       config={'n_rays': 4096, 'energy_half_range_mev': 40})
+        first = self.app.dispatch('/api/frame', dict(request, action='new'))
+        self.assertNotIn('feedback', first)
+        self.assertGreater(first['clipped_fraction'], 0.001)
+        self.assertIsNone(first['metrics']['fwhm_mev'])
+        self.assertTrue(any('视野截断' in w for w in first['metrics']['warnings']))
+        narrow = self.app.dispatch('/api/frame', dict(request, action='reveal'))
+        wide_request = dict(request, config={'n_rays': 4096, 'energy_half_range_mev': 240})
+        wide = self.app.dispatch('/api/frame', wide_request)
+        self.assertEqual(wide['question'], first['question'])
+        self.assertEqual(wide['feedback'], narrow['feedback'])
+        self.assertLess(wide['clipped_fraction'], 0.001)
+        self.assertIsNotNone(wide['metrics']['fwhm_mev'])
+        # Even re-creating the same seed in a different field preserves labels.
+        self.app.dispatch('/api/frame', dict(wide_request, action='new'))
+        recreated = self.app.dispatch('/api/frame', dict(wide_request, action='reveal'))
+        self.assertEqual(recreated['feedback']['initial'], narrow['feedback']['initial'])
 
     def test_bad_order_does_not_mutate_question(self):
         first = self.app.dispatch('/api/frame', dict(self.request, action='new'))
@@ -149,6 +173,7 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(meta['powers'][-1], [0, 5])
             self.assertEqual(meta['max_order'], 5)
             self.assertEqual(meta['default_practice_order'], 3)
+            self.assertEqual(meta['generator_version'], GENERATOR_VERSION)
         with self.request('/api/session', {}) as response:
             token = json.load(response)['session']
         with self.request('/api/frame', {'session': token}) as response:

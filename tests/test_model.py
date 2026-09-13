@@ -1,5 +1,5 @@
 import ast
-from dataclasses import replace
+from dataclasses import asdict, replace
 import io
 import json
 from pathlib import Path
@@ -12,7 +12,7 @@ from eels_sim import Config, MODEL_VERSION, POWERS, TERMS, coefficients, polynom
 from eels_sim import legacy
 from eels_sim.model import FWHM_FACTOR, measure_spectrum
 from eels_sim.presentation import export_npz, grayscale, png_bytes
-from eels_sim.training import checked_controls, new_exercise
+from eels_sim.training import GENERATOR_VERSION, checked_controls, new_exercise
 
 
 class PolynomialTests(unittest.TestCase):
@@ -145,30 +145,67 @@ class TrainingTests(unittest.TestCase):
                 feedback = exercise.feedback(answer)
                 self.assertEqual(feedback['normalized_rms'], 0)
                 self.assertEqual(feedback['residual'], coefficients())
-                self.assertLess(simulate(exercise.initial).clipped_fraction, 0.001)
         self.assertNotEqual(new_exercise(1).initial, new_exercise(2).initial)
 
-    def test_difficulty_does_not_collapse_under_field_limit(self):
-        for count in (1, 3, 9):
-            sizes = [sum(v*v for v in new_exercise(42, level, count).initial.values())
-                     for level in ('easy', 'medium', 'hard')]
-            self.assertLess(sizes[0], sizes[1])
-            self.assertLess(sizes[1], sizes[2])
+    def test_per_term_strength_is_not_diluted_by_term_count(self):
+        for seed in range(16):
+            for order in range(1, 6):
+                for count in range(1, len(terms_through(order))+1):
+                    previous = None
+                    for level, low, high in (('easy', 7, 20), ('medium', 15.75, 45), ('hard', 31.5, 90)):
+                        q = new_exercise(seed, level, count, max_order=order)
+                        active = {n: v for n, v in q.initial.items() if v}
+                        with self.subTest(seed=seed, order=order, count=count, level=level):
+                            self.assertEqual(len(active), count)
+                            self.assertTrue(all(low <= abs(v) <= high for v in active.values()))
+                            if previous is not None:
+                                self.assertEqual(active.keys(), previous.keys())
+                                self.assertTrue(all(v*previous[n] > 0 and abs(v) > abs(previous[n])
+                                                    for n, v in active.items()))
+                        previous = active
+
+    def test_scene_does_not_rescale_labels(self):
+        for order, count in ((3, 9), (5, 20)):
+            original = new_exercise(42, term_count=count, max_order=order)
+            for config in (Config(energy_half_range_mev=40, extra_sigma_mev=20),
+                           Config(energy_half_range_mev=480),
+                           Config(pupil_x=1.3, pupil_y=1.3),
+                           Config(pupil_x=0.2, pupil_y=0.2, angular_slit_half=0.05),
+                           Config(sample_seed=3, noise_seed=4, n_rays=4096, poisson=True)):
+                q = new_exercise(42, term_count=count, config=config, max_order=order)
+                self.assertEqual(q.initial, original.initial)
+                self.assertEqual(q.creation_config, asdict(config))
+
+    def test_twenty_term_visible_regression_and_clipping(self):
+        medium = new_exercise(42, 'medium', 20, max_order=5)
+        self.assertGreater(simulate(medium.initial).metrics['rms_mev'], 20)
+        narrow = Config(energy_half_range_mev=40, n_rays=4096)
+        wide = replace(narrow, energy_half_range_mev=240)
+        q = new_exercise(42, 'hard', 20, narrow, max_order=5)
+        self.assertEqual(q.initial, new_exercise(42, 'hard', 20, wide, max_order=5).initial)
+        clipped = simulate(q.initial, narrow)
+        self.assertGreater(clipped.clipped_fraction, 0.001)
+        self.assertIsNone(clipped.metrics['fwhm_mev'])
+        self.assertTrue(any('视野截断' in w for w in clipped.metrics['warnings']))
+        self.assertLess(simulate(q.initial, wide).clipped_fraction, 0.001)
+        answer = q.feedback({})['answer']
+        np.testing.assert_array_equal(simulate(q.residual(answer), narrow).counts, simulate(config=narrow).counts)
 
     def test_compensation_recovers_baseline(self):
         exercise = new_exercise(89)
         answer = {k: -v for k, v in exercise.initial.items()}
         np.testing.assert_array_equal(simulate(exercise.residual(answer)).counts, simulate().counts)
 
-    def test_default_third_order_seed_and_score_are_unchanged(self):
-        old = {'D10': -5.77, 'D01': -4.41, 'D20': -5.83, 'D11': 6.74, 'D02': 6.72,
-               'D30': -5.39, 'D21': 3.78, 'D12': 4.88, 'D03': -4.49}
+    def test_default_third_order_versioned_seed_and_score(self):
+        expected = {'D10': -34.23, 'D01': -26.12, 'D20': -34.58, 'D11': 39.96, 'D02': 39.82,
+                    'D30': -31.97, 'D21': 22.4, 'D12': 28.92, 'D03': -26.6}
         q = new_exercise(42)
-        self.assertEqual(q.initial, coefficients(old))
+        self.assertEqual(q.initial, coefficients(expected))
         self.assertEqual(q.max_order, 3)
-        self.assertAlmostEqual(q.feedback({})['normalized_rms'], np.sqrt(np.mean(np.square(list(old.values()))))/120)
+        self.assertEqual(q.feedback({})['generator_version'], GENERATOR_VERSION)
+        self.assertAlmostEqual(q.feedback({})['normalized_rms'], np.sqrt(np.mean(np.square(list(expected.values()))))/120)
 
-    def test_all_orders_reproducible_reachable_and_bounded(self):
+    def test_all_orders_reproducible_reachable_and_coefficient_bounded(self):
         baseline = simulate().counts
         for order in range(1, 6):
             eligible = terms_through(order)
@@ -178,7 +215,7 @@ class TrainingTests(unittest.TestCase):
                     self.assertEqual(q, new_exercise(42, level, count, max_order=order))
                     self.assertEqual(sum(v != 0 for v in q.initial.values()), count)
                     self.assertTrue(all(q.initial[n] == 0 for n in TERMS if n not in eligible))
-                    self.assertLess(simulate(q.initial).clipped_fraction, 0.001)
+                    self.assertLessEqual(max(abs(v) for v in q.initial.values()), 90)
                     feedback = q.feedback({})
                     self.assertEqual(feedback['eligible_terms'], eligible)
                     self.assertEqual(feedback['max_order'], order)
@@ -195,6 +232,8 @@ class TrainingTests(unittest.TestCase):
         with self.assertRaises(ValueError): q.residual({'D05': 1})
 
     def test_bad_training_inputs(self):
+        for config in ({}, 42, object()):
+            with self.assertRaises(ValueError): new_exercise(42, config=config)
         for args in ((-1,), (42, 'unknown'), (42, 'easy', 0), (42, 'easy', 10), (True,)):
             with self.assertRaises(ValueError): new_exercise(*args)
         for kwargs in ({'max_order': True}, {'max_order': 6}, {'max_order': 0}, {'max_order': 4.0},

@@ -13,7 +13,7 @@
     <label class="mode-label">模式<select id="mode"><option value="free">自由探索 · 直接调整残余像差</option><option value="practice">盲调练习 · 调整补偿量</option></select></label>
     <div id="practice" hidden>
       <div class="practice-options">
-        <label>难度<select id="difficulty"><option value="easy">初级</option><option value="medium" selected>中级</option><option value="hard">高级</option></select></label>
+        <label>单项难度<select id="difficulty" title="每个选中项的绝对系数：初级 7–20、中级 15.75–45、高级 31.5–90；正负随机，不按总偏移缩小"><option value="easy">初级</option><option value="medium" selected>中级</option><option value="hard">高级</option></select></label>
         <label>最高阶<select id="max-order" title="从一阶到所选最高阶中抽题；点击出题后生效"><option value="1">一阶</option><option value="2">二阶</option><option value="3" selected>三阶</option><option value="4">四阶</option><option value="5">五阶</option></select></label>
         <label>隐藏项数<select id="term-count"><option value="1">1 项</option><option value="3">3 项</option><option value="9" selected>全部 9 项</option></select></label>
         <label>种子<input id="seed" type="number" min="0" max="4294967295" step="1" value="42"></label>
@@ -76,7 +76,7 @@
       <details class="panel"><summary>模型说明与练习方法</summary>
         <p id="mode-help" class="hint">一至五阶共 20 项，分三页调节。翻页不清零、不关闭其他页的系数，所有已调项共同叠加；页签圆点表示该页存在非零系数。系数单位：meV / 归一化角度幂。</p>
         <p>先设置步长，再点击该行“滚轮调节”：鼠标在页面任意位置滚动都只调这一项，不翻动网页。左键保留并停止；Esc 撤销本次调整。Dij 对应 uⁱvʲ，无阶乘。量程 ±120 是练习范围，不是设备控制限值。</p>
-        <p>自由模式从零开始，先单独观察 D01 的倾斜、D02 的弯曲，再叠加其他项。练习模式隐藏初始像差，滑块是你施加的补偿量，目标是让残余接近零。可选择最高一至五阶，再选择隐藏项数；候选项覆盖一阶至所选最高阶，不保证每题都抽中最高阶。点击出题后设置生效；重试保留原题的阶数。</p><p>无像差时是具有有限能量厚度的竖直带，而不是二维点。8 meV 是有效总能量响应（高斯 σ≈3.397 meV），不是色差系数 Cc。源、真实能角色差耦合、衍射和设备控制尚未标定；不能用本模型直接诊断仪器。</p><p>只追求最小 FWHM 可能遗漏长尾或多峰；同时观察形状、RMS 宽度和按需揭示的系数残差。自动亮度适合看形状，锁定亮度才适合比较峰值强弱。</p><p id="version"></p>
+        <p>自由模式从零开始，先单独观察 D01 的倾斜、D02 的弯曲，再叠加其他项。练习模式隐藏初始像差，滑块是你施加的补偿量，目标是让残余接近零。可选择最高一至五阶，再选择隐藏项数；候选项覆盖一阶至所选最高阶，不保证每题都抽中最高阶。点击出题后设置生效；重试保留原题的阶数。</p><p>难度控制每个选中项的绝对系数：初级 7–20、中级 15.75–45、高级 31.5–90，正负随机。选满 20 项也不分摊总偏移预算；这是系数幅度，不保证各项视觉效果相同或总峰宽单调。强像差可能超出视野，可在“场景与采样”扩大能量视野至 ±240 / ±480 meV，不会改变本题答案。</p><p>无像差时是具有有限能量厚度的竖直带，而不是二维点。8 meV 是有效总能量响应（高斯 σ≈3.397 meV），不是色差系数 Cc。源、真实能角色差耦合、衍射和设备控制尚未标定；不能用本模型直接诊断仪器。</p><p>只追求最小 FWHM 可能遗漏长尾或多峰；同时观察形状、RMS 宽度和按需揭示的系数残差。自动亮度适合看形状，锁定亮度才适合比较峰值强弱。</p><p id="version"></p>
       </details>
     </div>
   </div>

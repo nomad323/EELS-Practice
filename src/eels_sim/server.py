@@ -12,7 +12,7 @@ import numpy as np
 
 from .model import Config, CONTROL_LIMIT, MAX_ORDER, MODEL_VERSION, POWERS, TERMS, coefficients, simulate, terms_through
 from .presentation import export_npz, frame, grayscale
-from .training import Exercise, checked_controls, new_exercise
+from .training import GENERATOR_VERSION, Exercise, checked_controls, new_exercise
 
 WEB = Path(__file__).parent / "web"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -109,7 +109,8 @@ class Application:
         response.update(mode=mode, controls=controls, elapsed_ms=round((time.perf_counter()-start)*1000, 1))
         if mode == "practice":
             response["question"] = {"seed": session.exercise.seed, "difficulty": session.exercise.difficulty,
-                                    "term_count": session.exercise.term_count, "max_order": session.exercise.max_order}
+                                    "term_count": session.exercise.term_count, "max_order": session.exercise.max_order,
+                                    "generator_version": session.exercise.generator_version}
             if session.revealed:
                 response["feedback"] = labels
         session.last_result, session.last_labels = result, labels
@@ -155,6 +156,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/meta":
             self.json_response(200, {"model_version": MODEL_VERSION, "terms": TERMS, "powers": POWERS,
                                      "max_order": MAX_ORDER, "default_practice_order": 3,
+                                     "generator_version": GENERATOR_VERSION,
                                      "control_limit": CONTROL_LIMIT, "defaults": asdict(Config())})
         else:
             self.json_response(404, {"error": "路径不存在"})

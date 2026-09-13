@@ -272,3 +272,52 @@ sha256sum raw/20260912/*
 派生证据独立保存在 **`processed/validation/orders-v1/`**：修改前 `before-regression.npz`、`numerical-regression.txt`、`unit-http-tests.txt`、首轮 `browser-run.txt`、最终 `browser-test.json`、默认页 `browser-desktop.png` / `browser-narrow.png` / `layout-*.png`，以及 `browser-order-4.png`、`browser-order-5.png`、`order-{4,5}-{1024x768,390x844}.png`。未覆盖旧轮验证目录或原始资料。
 
 本轮确实改动了后端，**需要用户自行在原终端停止并重新运行程序，再 Ctrl+F5**，不能只刷新。需保留当前会话时先导出；重启会重建会话。没有停止/重启用户服务、安装依赖、提交、部署或仪器操作；只临时启动/停止测试自己的本地服务和浏览器。Windows 实体鼠标/触控板、浏览器缩放及仪器准确性仍未验收。上述证据为离线合成模型与 Linux Chromium 检查，不是硬件接受测试。
+
+## 单项难度：取消总位移预算摊薄（2026-09-13）
+
+### 问题、实现及兼容
+
+用户反馈二十项练习偏离很小，要求若难度按总偏移则换方案。检查 `src/eels_sim/training.py` 确认：原算法按各项绝对位移上界之和，给整组系数施加视野预算缩放；默认场景中级总预算为 48，项数越多，每项越小。它是保守上界，不是实际图像总位移或评分。
+
+现在每个抽中项独立保留原始幅度分布：初级绝对系数 7–20、中级 15.75–45、高级 31.5–90，随机正负、两位小数，不按项数/视野/孔径/展宽统一压缩。全部答案仍可在 ±120 内精确补偿。保留原评分公式、前向模型 `eels-effective-1.1` 和裁切判据；前端标注“单项难度”，超出视野时提示手动扩大视野而不改题目。
+
+新增独立 `generator_version=eels-exercise-per-term-1`，进入 `/api/meta`、公开题目、揭示反馈及 NPZ 标签。旧种子的题目数值有意改变（含三阶九项），旧导出应读实际标签，不能仅凭种子用新版还原。前端检查出题版本，拒绝仍用总预算的旧后端并提示重启。实现取舍见 `docs/decisions/0003-per-term-exercise-strength.md`；这取代前文历史记录中的总预算和旧种子兼容承诺。
+
+### 实测对比（离线合成模型，不是实验结果）
+
+固定题目种子 42、默认场景、零补偿，修改前后实际调用出题器和 `simulate`：
+
+| 题目 | 平均绝对系数：前 → 后 | 谱线 RMS / meV：前 → 后 |
+|---|---:|---:|
+| 九项中级 | 5.3344 → 31.6222 | 6.7296 → 34.6006 |
+| 二十项初级 | 1.1995 → 14.0045 | 3.6130 → 14.6945 |
+| 二十项中级 | 2.3995 → 31.5085 | 4.1902 → 32.3442 |
+
+二十项中级系数绝对值范围由 1.30–3.19 变为 17.03–41.87，FWHM 为 28.4587 meV，默认视野裁切比例约 2.8×10⁻¹³。二十项高级默认视野裁切约 **9.286%**，正确不报告有效 FWHM；其裁切后的 RMS 不能当完整谱线宽度。窄视野测试使用 4096 光线，±40 meV 时裁切约 48.239%，扩大到 ±240 meV 后该样例裁切为 0、答案不变。不能据此保证任意种子/场景在 ±240 或 ±480 下都无裁切。
+
+零像差完整测量字典与修改前保存值相同，FWHM 仍为 **8.002032171109645 meV**。上述九项/二十项的三档共六题，精确补偿后计数数组均与默认零像差基线逐元素相等。该比较是软件回归，不证明每个高阶项都有相同的可视影响。
+
+### 实际检查
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/difficulty-v1
+git diff --check
+sha256sum raw/20260912/*
+```
+
+- 修改前 **30 项 Python 单元/HTTP 测试通过（2.416 s）**；修改后 **33 项通过（3.033 s）**。逐项幅度测试覆盖种子 0…15、最高阶 1…5、每个阶域所有合法项数和三档难度，共 2400 组；验证非零项数、幅度上下限、同题跨难度的支持集/符号保留和幅度递增。
+- 额外覆盖：场景与采样改变不缩放标签、创建场景如实记录、二十项中级可见宽度回归、强题窄视野告警/无效 FWHM/扩大视野、答案可达、全阶评分分母及精确补偿、出题版本的 HTTP 与无 pickle NPZ 标签。旧“所有题初始无裁切”断言按新规则替换为系数上界和明确裁切处理测试，不再承诺初始无裁切。
+- 两项 Node 语法检查通过；**Chromium 149.0.7827.55 实际浏览器回归 PASS**。新增检查二十项三档的每项幅度、种子 42 中级谱线 RMS >20、裁切扩大视野提示、改变视野不改题目/答案/评分，以及二十项旧总预算后端的重启提示。
+- 原九项桌面及窄屏布局、四/五阶分页与跨页叠加、全阶题目/重试/精确补偿、滚轮事务/迟到帧、连续拖动及显示不改数据继续通过；额外响应延迟下松手前显示 6 帧，最多一个模拟请求在途。无捕获 JS 异常或页面对外请求。已读取检查二十项中级截图及带裁切提示的 1280×600 九项截图。
+- 本轮首轮单元/HTTP 及首轮、最终浏览器检查均通过，没有测试失败。差异空白检查通过。`raw/`、前向模型和 legacy 未改；原件哈希与先前记录一致。
+
+### 保存路径和未验证项
+
+修改：`src/eels_sim/{training,server}.py`、`src/eels_sim/web/{app.js,index.html}`、`tests/{test_model.py,test_server.py,browser_smoke.mjs}`、`README.md`、`docs/requirements.md`、本文件；两个既有决定文件仅增加后续替代规则的链接。新增：`docs/decisions/0003-per-term-exercise-strength.md`。
+
+证据独立保存在 **`processed/validation/difficulty-v1/`**：`training-before.py`（修改前源码）、`before.json`、`after.json`（实际题目/场景/测量）、`comparison.txt`、`before-tests.txt`、`unit-http-tests.txt`、`browser-run.txt`、`browser-final.json`，以及 `difficulty-medium-20.png`、`browser-*.png`、`layout-*.png`、`order-*.png`。未覆盖旧轮验证目录和原件；未改 `PLAN.md` 或管理日志。
+
+没有安装依赖、导入外部源码、停止用户服务、提交、部署或仪器操作。只临时启动/关闭测试自己的回环服务和浏览器。用户需先按需导出当前会话，再自行停止并重新运行 `python3 run.py`、浏览器 Ctrl+F5 并重新出题。Windows→WSL2、用户主观练习难度及仪器准确性仍未验收；高阶弱可见性和正负抵消仍存在，不保证任意场景的视觉难度。

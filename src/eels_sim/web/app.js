@@ -263,7 +263,9 @@ function render(frame, image) {
   ["fwhm", "centroid", "rms"].forEach((id, i) => $(id).textContent = fmt(frame.metrics[["fwhm_mev", "centroid_mev", "rms_mev"][i]]));
   $("status").textContent = `${frame.elapsed_ms.toFixed(0)} ms · ${frame.shape[1]} × ${frame.shape[0]}`;
   $("diagnostics").textContent = `角窗口通过率 ${(100*frame.transmission).toFixed(2)}% · 通过后信号视野损失 ${(100*frame.clipped_fraction).toFixed(3)}% · 能量采样 ${frame.pixel_mev.toFixed(3)} meV/像素 · 灰度上限 ${fmt(frame.display_vmax, 2)} 计数`;
-  $("warnings").replaceChildren(...frame.metrics.warnings.map(text => { const p = document.createElement("p"); p.textContent = text; return p; }));
+  const warnings = [...frame.metrics.warnings];
+  if (frame.clipped_fraction > 0.001) warnings.push("可在“场景与采样”扩大能量视野（±240 / ±480 meV）；不会改变本题系数或答案。");
+  $("warnings").replaceChildren(...warnings.map(text => { const p = document.createElement("p"); p.textContent = text; return p; }));
   $("feedback").hidden = !frame.feedback;
   if (!frame.feedback) { $("answer-rows").replaceChildren(); $("score").textContent = ""; }
   $("reveal").textContent = frame.feedback ? "隐藏答案" : "查看答案 / 差距";
@@ -355,7 +357,7 @@ async function init() {
   try {
     const response = await fetch("/api/meta"); if (!response.ok) throw new Error("无法加载本地模型配置");
     meta = await response.json();
-    if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20) throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
+    if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20 || meta.generator_version !== "eels-exercise-per-term-1") throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
     names = meta.terms;
     const superscript = ["", "", "²", "³", "⁴", "⁵"];
     monomials = meta.powers.map(([i,j]) => (i ? "u"+superscript[i] : "") + (j ? "v"+superscript[j] : ""));
@@ -367,7 +369,7 @@ async function init() {
     const plotObserver = new ResizeObserver(redrawPlots);
     [$("spot"), $("spectrum")].forEach(canvas => plotObserver.observe(canvas));
     window.addEventListener("resize", redrawPlots);
-    $("version").textContent = `模型版本：${meta.model_version} · NumPy 核心 + 本地 Canvas · 无外部网络请求`;
+    $("version").textContent = `模型版本：${meta.model_version} · 出题版本：${meta.generator_version} · NumPy 核心 + 本地 Canvas · 无外部网络请求`;
     request();
   } catch (error) { $("error").textContent = `启动失败：${error.message}`; $("status").textContent = "启动失败"; }
 }
