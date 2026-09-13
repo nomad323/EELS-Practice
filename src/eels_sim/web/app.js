@@ -1,8 +1,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const names = ["D10", "D01", "D20", "D11", "D02", "D30", "D21", "D12", "D03"];
-const monomials = ["u", "v", "u²", "uv", "v²", "u³", "u²v", "uv²", "v³"];
-let meta, session, controls = Object.fromEntries(names.map(n => [n, 0]));
+let names = [], monomials = [], orders = {};
+let meta, session, controls = {};
+let currentPage = 3, activeOrder = 5;
 let lastFrame = null, lastImage = null, running = false, dirty = false, pendingAction = "update";
 let revision = 0, contextRevision = 0, timer = null, lockedVmax = null, failed = false;
 let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false;
@@ -32,6 +32,48 @@ function scene() {
 }
 function syncControls() {
   names.forEach(name => { $(`slide-${name}`).value = controls[name]; $(`value-${name}`).value = controls[name]; });
+  updatePageBadges();
+}
+function pageTerms(page) {
+  return names.filter(n => orders[n] <= activeOrder && (page === 3 ? orders[n] <= 3 : orders[n] === page));
+}
+function updatePageBadges() {
+  [3, 4, 5].forEach(page => {
+    const count = pageTerms(page).filter(n => controls[n] !== 0).length;
+    const button = $(`page-${page}`);
+    button.classList.toggle("has-values", count > 0);
+    button.title = `${count} 项当前系数非零；翻页保留数值，所有已调项共同叠加`;
+  });
+}
+function updatePages() {
+  if (!pageTerms(currentPage).length) currentPage = 3;
+  const visible = pageTerms(currentPage);
+  names.forEach(n => {
+    $(`row-${n}`).hidden = !visible.includes(n);
+    $(`row-${n}`).querySelectorAll("input,button").forEach(el => el.disabled = orders[n] > activeOrder);
+  });
+  [3, 4, 5].forEach(page => {
+    $(`page-${page}`).disabled = !pageTerms(page).length;
+    $(`page-${page}`).setAttribute("aria-pressed", String(page === currentPage));
+  });
+  $("page-3").textContent = activeOrder === 1 ? "一阶" : activeOrder === 2 ? "一～二阶" : "一～三阶";
+  updatePageBadges();
+}
+function setPage(page) {
+  if (!pageTerms(page).length) return;
+  finishWheel(); currentPage = page; updatePages();
+  // Paging is display-only, even if a simulation is still in flight.
+  if (matchMedia("(max-width:1100px)").matches) document.querySelector(".workbench").scrollIntoView({block: "start"});
+}
+function updateTermChoices() {
+  const order = number("max-order"), total = order*(order+3)/2;
+  const previous = Number($("term-count").value);
+  const choices = [...new Set([1, 3, 9, 14, 20, total])].filter(n => n <= total).sort((a,b) => a-b);
+  $("term-count").replaceChildren(...choices.map(n => new Option(n === total ? `全部 ${n} 项` : `${n} 项`, String(n))));
+  $("term-count").value = String(choices.includes(previous) ? previous : total);
+}
+function newQuestion() {
+  finishWheel(); activeOrder = number("max-order"); updatePages(); zeroControls(); request("new");
 }
 function zeroControls() { controls = Object.fromEntries(names.map(n => [n, 0])); syncControls(); }
 function updateWheelBanner() {
@@ -47,7 +89,7 @@ function updateWheelUI() {
   updateWheelBanner();
 }
 function startWheel(name) {
-  if (wheelTarget || !wheelNote(name)) return;
+  if (wheelTarget || $(`row-${name}`).hidden || !wheelNote(name)) return;
   wheelTarget = name;
   // Snapshot the current controls, not a possibly older rendered frame. A wheel
   // session changes only one coefficient; Escape restores this transaction.
@@ -104,9 +146,10 @@ function buildControls() {
     settings.append(toggle, stepLabel, note);
     row.append(label, slider, input, reset, settings); $("sliders").append(row);
   });
+  updatePages();
 }
 function schedule() {
-  revision++; dirty = true;
+  revision++; dirty = true; updatePageBadges();
   $("status").textContent = "实时更新中…";
   buttonState();
   // Coalesce only within a browser frame; continuous input never restarts a
@@ -134,7 +177,7 @@ async function pump() {
     $("status").textContent = lastFrame ? "实时更新中…" : "计算中…";
     try {
       const data = {session, mode: $("mode").value, action, controls: {...controls}, config: scene(),
-        seed: number("seed"), difficulty: $("difficulty").value, term_count: number("term-count"),
+        seed: number("seed"), difficulty: $("difficulty").value, term_count: number("term-count"), max_order: number("max-order"),
         gamma: number("gamma"), vmax: $("lock-intensity").checked ? lockedVmax : null};
       const response = await post("/api/frame", data);
       const image = new Image(); image.src = `data:image/png;base64,${response.image_png}`; await image.decode();
@@ -224,10 +267,13 @@ function render(frame, image) {
   $("feedback").hidden = !frame.feedback;
   if (!frame.feedback) { $("answer-rows").replaceChildren(); $("score").textContent = ""; }
   $("reveal").textContent = frame.feedback ? "隐藏答案" : "查看答案 / 差距";
-  if (frame.question) $("question-info").textContent = `本题：种子 ${frame.question.seed} · ${frame.question.term_count} 项 · ${frame.question.difficulty}。更改难度/种子后需重新出题。`;
+  if (frame.question) {
+    $("question-info").textContent = `本题：最高 ${frame.question.max_order} 阶 · ${frame.question.term_count} 项 · 种子 ${frame.question.seed} · ${frame.question.difficulty}。更改设置后需重新出题。`;
+    if (activeOrder !== frame.question.max_order) { activeOrder = frame.question.max_order; updatePages(); }
+  }
   if (frame.feedback) {
-    $("score").textContent = `按 ±${meta.control_limit} meV 量程归一化的残差 RMS：${(frame.feedback.normalized_rms*100).toFixed(3)}%`;
-    $("answer-rows").replaceChildren(...names.map(name => {
+    $("score").textContent = `本题 ${frame.feedback.eligible_terms.length} 个可调项，按 ±${meta.control_limit} meV 量程归一化的残差 RMS：${(frame.feedback.normalized_rms*100).toFixed(3)}%`;
+    $("answer-rows").replaceChildren(...frame.feedback.eligible_terms.map(name => {
       const row = document.createElement("tr");
       [name, ...["initial", "controls", "answer", "residual"].map(k => fmt(frame.feedback[k][name], 4))].forEach(value => {
         const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
@@ -274,16 +320,19 @@ function bind() {
     }
   }, true);
   window.addEventListener("blur", () => finishWheel());
+  [3, 4, 5].forEach(page => $(`page-${page}`).addEventListener("click", () => setPage(page)));
+  $("max-order").addEventListener("change", () => { finishWheel(); updateTermChoices(); });
   $("mode").addEventListener("change", () => {
     finishWheel();
     const practice = $("mode").value === "practice";
     $("practice").hidden = !practice; $("reveal").hidden = !practice; $("feedback").hidden = true;
-    $("mode-help").textContent = practice ? "滑块是补偿量 c；隐藏像差 a 与它相加。重试只清零补偿，不换题。" : "九项可任意叠加。系数单位：meV / 归一化角度幂。";
-    zeroControls(); pendingAction = practice ? "new" : "update"; request();
+    $("mode-help").textContent = practice ? "滑块是补偿量 c；隐藏像差 a 与它相加。重试只清零补偿，不换题。最高阶设置在重新出题后生效。" : "一至五阶共 20 项，跨页任意叠加。系数单位：meV / 归一化角度幂。";
+    activeOrder = practice ? number("max-order") : meta.max_order;
+    currentPage = 3; updatePages(); zeroControls(); pendingAction = practice ? "new" : "update"; request();
   });
   $("zero").addEventListener("click", () => { zeroControls(); request(); });
-  $("new-question").addEventListener("click", () => { zeroControls(); request("new"); });
-  $("random-question").addEventListener("click", () => { $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; zeroControls(); request("new"); });
+  $("new-question").addEventListener("click", newQuestion);
+  $("random-question").addEventListener("click", () => { $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; newQuestion(); });
   $("retry").addEventListener("click", () => { zeroControls(); request("retry"); });
   $("reveal").addEventListener("click", () => request(lastFrame?.feedback ? "hide" : "reveal"));
   ["pupil-x", "pupil-y", "angular-slit", "y-psf", "extra-sigma", "counts", "background", "noise-seed", "poisson", "field", "quality"].forEach(id => $(id).addEventListener("change", () => request()));
@@ -305,7 +354,15 @@ function bind() {
 async function init() {
   try {
     const response = await fetch("/api/meta"); if (!response.ok) throw new Error("无法加载本地模型配置");
-    meta = await response.json(); session = (await post("/api/session", {})).session;
+    meta = await response.json();
+    if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20) throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
+    names = meta.terms;
+    const superscript = ["", "", "²", "³", "⁴", "⁵"];
+    monomials = meta.powers.map(([i,j]) => (i ? "u"+superscript[i] : "") + (j ? "v"+superscript[j] : ""));
+    orders = Object.fromEntries(names.map((n,i) => [n, meta.powers[i][0]+meta.powers[i][1]]));
+    controls = Object.fromEntries(names.map(n => [n, 0]));
+    activeOrder = meta.max_order; $("max-order").value = String(meta.default_practice_order); updateTermChoices();
+    session = (await post("/api/session", {})).session;
     buildControls(); bind();
     const plotObserver = new ResizeObserver(redrawPlots);
     [$("spot"), $("spectrum")].forEach(canvas => plotObserver.observe(canvas));

@@ -1,4 +1,4 @@
 """Offline EELS practice simulator; no GUI or server is started on import."""
-from .model import Config, MODEL_VERSION, TERMS, coefficients, polynomial, simulate
+from .model import Config, MAX_ORDER, MODEL_VERSION, POWERS, TERMS, coefficients, polynomial, simulate, terms_through
 
-__all__ = ["Config", "MODEL_VERSION", "TERMS", "coefficients", "polynomial", "simulate"]
+__all__ = ["Config", "MAX_ORDER", "MODEL_VERSION", "POWERS", "TERMS", "coefficients", "polynomial", "simulate", "terms_through"]

@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from .model import Config, CONTROL_LIMIT, MODEL_VERSION, TERMS, coefficients, simulate
+from .model import Config, CONTROL_LIMIT, MAX_ORDER, MODEL_VERSION, POWERS, TERMS, coefficients, simulate, terms_through
 from .presentation import export_npz, frame, grayscale
 from .training import Exercise, checked_controls, new_exercise
 
@@ -71,24 +71,28 @@ class Application:
             return self.render(session, data)
 
     def render(self, session, data):
-        allowed = {"session", "mode", "action", "controls", "config", "seed", "difficulty", "term_count", "gamma", "vmax"}
+        allowed = {"session", "mode", "action", "controls", "config", "seed", "difficulty", "term_count", "max_order", "gamma", "vmax"}
         if set(data) - allowed:
             raise ValueError("请求中含未知字段")
         mode, action = data.get("mode", "free"), data.get("action", "update")
         if mode not in ("free", "practice") or action not in ("update", "new", "reveal", "hide", "retry"):
             raise ValueError("未知模式或操作")
         config = Config.from_dict(data.get("config", {}))
+        max_order = data.get("max_order", 3)
+        terms_through(max_order)  # Validate even a draft setting before mutation.
         controls = checked_controls(data.get("controls", {}))
         # Validate presentation before mutating an exercise's state.
         grayscale(np.zeros((1, 1)), data.get("gamma", 0.5), data.get("vmax"))
         if mode == "practice":
             if action == "new" or session.exercise is None:
-                session.exercise = new_exercise(data.get("seed", 42), data.get("difficulty", "medium"), data.get("term_count", 9), config)
+                session.exercise = new_exercise(data.get("seed", 42), data.get("difficulty", "medium"), data.get("term_count", 9), config, max_order)
                 session.revealed = False
                 controls = coefficients()
             if action == "retry":
                 controls = coefficients()
                 session.revealed = False
+            # Updates use the actual question's order, not unsaved UI settings.
+            checked_controls(controls, session.exercise.max_order)
             if action == "reveal":
                 session.revealed = True
             if action == "hide":
@@ -96,7 +100,7 @@ class Application:
             effective = session.exercise.residual(controls)
             labels = session.exercise.feedback(controls)
         else:
-            effective, labels = controls, {"controls": controls, "mode": "free"}
+            effective, labels = controls, {"controls": controls, "mode": "free", "max_order": MAX_ORDER}
             session.revealed = False
         start = time.perf_counter()
         with self.compute_lock:
@@ -105,7 +109,7 @@ class Application:
         response.update(mode=mode, controls=controls, elapsed_ms=round((time.perf_counter()-start)*1000, 1))
         if mode == "practice":
             response["question"] = {"seed": session.exercise.seed, "difficulty": session.exercise.difficulty,
-                                    "term_count": session.exercise.term_count}
+                                    "term_count": session.exercise.term_count, "max_order": session.exercise.max_order}
             if session.revealed:
                 response["feedback"] = labels
         session.last_result, session.last_labels = result, labels
@@ -149,7 +153,8 @@ class Handler(BaseHTTPRequestHandler):
             filename, mime = STATIC[self.path]
             self.send_content(200, (WEB/filename).read_bytes(), mime)
         elif self.path == "/api/meta":
-            self.json_response(200, {"model_version": MODEL_VERSION, "terms": TERMS,
+            self.json_response(200, {"model_version": MODEL_VERSION, "terms": TERMS, "powers": POWERS,
+                                     "max_order": MAX_ORDER, "default_practice_order": 3,
                                      "control_limit": CONTROL_LIMIT, "defaults": asdict(Config())})
         else:
             self.json_response(404, {"error": "路径不存在"})

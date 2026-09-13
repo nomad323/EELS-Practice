@@ -10,12 +10,21 @@ import math
 
 import numpy as np
 
-MODEL_VERSION = "eels-effective-1.0"
-TERMS = ("D10", "D01", "D20", "D11", "D02", "D30", "D21", "D12", "D03")
-POWERS = ((1, 0), (0, 1), (2, 0), (1, 1), (0, 2), (3, 0), (2, 1), (1, 2), (0, 3))
+MODEL_VERSION = "eels-effective-1.1"
+MAX_ORDER = 5
+# Total degree, then descending u power; the original nine remain a prefix.
+POWERS = tuple((order-j, j) for order in range(1, MAX_ORDER+1) for j in range(order+1))
+TERMS = tuple(f"D{i}{j}" for i, j in POWERS)
 ALIASES = dict(zip(("x", "y", "x^2", "xy", "y^2", "x^3", "x^2 y", "x y^2", "y^3"), TERMS))
 CONTROL_LIMIT = 120.0
 FWHM_FACTOR = math.sqrt(8 * math.log(2))
+
+
+def terms_through(max_order):
+    """Terms of degree 1…max_order, in the canonical export/basis order."""
+    if type(max_order) is not int or not 1 <= max_order <= MAX_ORDER:
+        raise ValueError(f"最高阶应为 1…{MAX_ORDER} 的整数")
+    return TERMS[:max_order*(max_order+3)//2]
 
 
 def coefficients(values=None):
@@ -200,7 +209,9 @@ class Result:
     clipped_fraction: float
 
     def metadata(self):
-        return {"model_version": MODEL_VERSION, "config": asdict(self.config),
+        return {"model_version": MODEL_VERSION, "terms": TERMS, "powers": POWERS,
+                "coefficient_convention": "Dij*u**i*v**j; no factorial",
+                "config": asdict(self.config),
                 "effective_coefficients": self.effective, "metrics": self.metrics,
                 "transmission": self.transmission, "clipped_fraction": self.clipped_fraction,
                 "units": {"energy": "meV", "y": "reference-pupil normalized angle",

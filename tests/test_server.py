@@ -7,7 +7,7 @@ import urllib.request
 
 import numpy as np
 
-from eels_sim.model import coefficients
+from eels_sim.model import TERMS, coefficients
 from eels_sim.server import Application, LocalServer
 
 
@@ -37,6 +37,62 @@ class ApplicationTests(unittest.TestCase):
         retry = self.app.dispatch('/api/frame', dict(self.request, action='retry'))
         self.assertNotIn('feedback', retry)
         self.assertEqual(retry['image_png'], first['image_png'])
+
+    def test_high_order_question_lifecycle_and_lossless_labels(self):
+        request = dict(self.request, max_order=5, term_count=20)
+        first = self.app.dispatch('/api/frame', dict(request, action='new'))
+        self.assertEqual(first['question']['max_order'], 5)
+        self.assertNotIn('feedback', first)
+        self.assertEqual(len(first['controls']), 20)
+        revealed = self.app.dispatch('/api/frame', dict(request, action='reveal'))
+        feedback = revealed['feedback']
+        self.assertTrue(all(v != 0 for v in feedback['initial'].values()))
+        with np.load(io.BytesIO(self.app.dispatch('/api/export', {'session': self.token})), allow_pickle=False) as data:
+            metadata = json.loads(str(data['metadata_json']))
+            self.assertEqual(metadata['effective_coefficients'], feedback['initial'])
+            self.assertEqual(metadata['labels']['max_order'], 5)
+            np.testing.assert_array_equal(data['spectrum'], data['counts'].sum(axis=0))
+        # Pending selectors do not replace a question on update/reveal/retry.
+        staged = dict(request, max_order=1, term_count=2)
+        solved = self.app.dispatch('/api/frame', dict(staged, controls=feedback['answer']))
+        self.assertEqual(solved['question']['max_order'], 5)
+        self.assertEqual(solved['feedback']['normalized_rms'], 0)
+        self.assertAlmostEqual(solved['metrics']['fwhm_mev'], 8, delta=0.2)
+        with np.load(io.BytesIO(self.app.dispatch('/api/export', {'session': self.token})), allow_pickle=False) as data:
+            metadata = json.loads(str(data['metadata_json']))
+            self.assertEqual(metadata['labels']['max_order'], 5)
+            self.assertEqual(metadata['labels']['initial'], feedback['initial'])
+            self.assertEqual(metadata['terms'], list(TERMS))
+            self.assertEqual(metadata['effective_coefficients'], coefficients())
+        retried = self.app.dispatch('/api/frame', dict(staged, action='retry'))
+        self.assertEqual(retried['question'], first['question'])
+        self.assertEqual(retried['image_png'], first['image_png'])
+        self.assertNotIn('feedback', retried)
+        lower = self.app.dispatch('/api/frame', dict(staged, action='new'))
+        self.assertEqual(lower['question']['max_order'], 1)
+        self.assertEqual(lower['controls'], coefficients())
+        with self.assertRaises(ValueError):
+            self.app.dispatch('/api/frame', dict(staged, action='reveal', controls={'D05': 1}))
+        unchanged = self.app.dispatch('/api/frame', staged)
+        self.assertNotIn('feedback', unchanged)
+        self.assertEqual(unchanged['question'], lower['question'])
+        self.assertEqual(unchanged['image_png'], lower['image_png'])
+        free = self.app.dispatch('/api/frame', dict(staged, mode='free', controls={'D22': 8, 'D05': -9}))
+        self.assertEqual(free['controls']['D22'], 8)
+        self.assertEqual(free['controls']['D05'], -9)
+        self.assertNotIn('question', free)
+
+    def test_bad_order_does_not_mutate_question(self):
+        first = self.app.dispatch('/api/frame', dict(self.request, action='new'))
+        for invalid in (0, 6, True, 5.0, '5', None):
+            with self.assertRaises(ValueError):
+                self.app.dispatch('/api/frame', dict(self.request, action='new', max_order=invalid))
+        with self.assertRaises(ValueError):
+            self.app.dispatch('/api/frame', dict(self.request, action='new', max_order=4, term_count=20))
+        unchanged = self.app.dispatch('/api/frame', self.request)
+        self.assertEqual(unchanged['question'], first['question'])
+        self.assertEqual(unchanged['image_png'], first['image_png'])
+        self.assertNotIn('feedback', unchanged)
 
     def test_sessions_are_isolated_and_free_mode_is_direct(self):
         other = self.app.create_session()['session']
@@ -87,11 +143,23 @@ class HTTPTests(unittest.TestCase):
                 self.assertIn("connect-src 'self'", response.headers['Content-Security-Policy'])
                 self.assertGreater(len(response.read()), 100)
         with self.request('/api/meta') as response:
-            self.assertEqual(json.load(response)['defaults']['base_fwhm_mev'], 8)
+            meta = json.load(response)
+            self.assertEqual(meta['defaults']['base_fwhm_mev'], 8)
+            self.assertEqual(meta['terms'], list(TERMS))
+            self.assertEqual(meta['powers'][-1], [0, 5])
+            self.assertEqual(meta['max_order'], 5)
+            self.assertEqual(meta['default_practice_order'], 3)
         with self.request('/api/session', {}) as response:
             token = json.load(response)['session']
         with self.request('/api/frame', {'session': token}) as response:
             self.assertAlmostEqual(json.load(response)['metrics']['fwhm_mev'], 8, delta=0.2)
+        with self.request('/api/frame', {'session': token, 'mode': 'practice', 'action': 'new', 'max_order': 4, 'term_count': 14}) as response:
+            question = json.load(response)
+            self.assertEqual(question['question']['max_order'], 4)
+            self.assertEqual(question['question']['term_count'], 14)
+            self.assertNotIn('feedback', question)
+        with self.request('/api/frame', {'session': token, 'mode': 'practice', 'action': 'reveal'}) as response:
+            self.assertNotEqual(json.load(response)['feedback']['initial']['D04'], 0)
         with self.request('/api/export', {'session': token}) as response:
             self.assertEqual(response.headers['Content-Type'], 'application/octet-stream')
             with np.load(io.BytesIO(response.read()), allow_pickle=False) as data:

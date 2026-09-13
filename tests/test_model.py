@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from eels_sim import Config, TERMS, coefficients, polynomial, simulate
+from eels_sim import Config, MODEL_VERSION, POWERS, TERMS, coefficients, polynomial, simulate, terms_through
 from eels_sim import legacy
 from eels_sim.model import FWHM_FACTOR, measure_spectrum
 from eels_sim.presentation import export_npz, grayscale, png_bytes
@@ -22,7 +22,23 @@ class PolynomialTests(unittest.TestCase):
         expected = [u, v, u*u, u*v, v*v, u*u*u, u*u*v, u*v*v, v*v*v]
         for name, values in zip(TERMS, expected):
             np.testing.assert_allclose(polynomial(u, v, {name: 2.5}), 2.5*values)
-        np.testing.assert_allclose(polynomial(u, v, dict.fromkeys(TERMS, 2.5)), 2.5*np.sum(expected, axis=0))
+        np.testing.assert_allclose(polynomial(u, v, dict.fromkeys(TERMS[:9], 2.5)), 2.5*np.sum(expected, axis=0))
+
+    def test_fourth_fifth_order_basis_and_cross_page_superposition(self):
+        self.assertEqual(TERMS[9:], ('D40', 'D31', 'D22', 'D13', 'D04', 'D50', 'D41', 'D32', 'D23', 'D14', 'D05'))
+        u, v = np.array([-0.7, 0, 0.4, 1.2]), np.array([0.1, 0.8, -0.3, -0.5])
+        expected = [u**4, u**3*v, u**2*v**2, u*v**3, v**4,
+                    u**5, u**4*v, u**3*v**2, u**2*v**3, u*v**4, v**5]
+        for name, basis in zip(TERMS[9:], expected):
+            np.testing.assert_allclose(polynomial(u, v, {name: -2.5}), -2.5*basis)
+        np.testing.assert_allclose(polynomial(u, v, {'D01': 3, 'D22': -7, 'D05': 9}), 3*v-7*u**2*v**2+9*v**5)
+        np.testing.assert_allclose(polynomial(u, v, dict.fromkeys(TERMS[9:], 2)), 2*np.sum(expected, axis=0))
+        for order, count in enumerate((2, 5, 9, 14, 20), 1):
+            self.assertEqual(terms_through(order), TERMS[:count])
+        for value in (0, 6, True, 3.0, '5', None):
+            with self.assertRaises(ValueError): terms_through(value)
+        with self.assertRaises(ValueError): coefficients({'D60': 1})
+        with self.assertRaises(ValueError): checked_controls({'D05': 120.01})
 
     def test_aliases_and_validation(self):
         self.assertEqual(coefficients({'x': 1, 'xy': 2, 'x y^2': 3})['D12'], 3)
@@ -73,6 +89,21 @@ class ModelTests(unittest.TestCase):
         a = {'D10': 12, 'D11': 8, 'D30': -20, 'D12': 3, 'D02': 7}
         b = {k: (-v if k in ('D10', 'D11', 'D30', 'D12') else v) for k, v in a.items()}
         np.testing.assert_allclose(simulate(a).counts, simulate(b).counts, atol=1e-9)
+
+    def test_high_order_forward_conservation_and_parity(self):
+        baseline = simulate().counts
+        for name in TERMS[9:]:
+            r = simulate({name: 20})
+            self.assertFalse(np.array_equal(r.counts, baseline), name)
+            self.assertAlmostEqual(r.counts.sum(), 1e6, delta=1e-6)
+            self.assertLess(r.clipped_fraction, 1e-10)
+            np.testing.assert_array_equal(r.spectrum, r.counts.sum(axis=0))
+        a = {n: (-1)**i*(i+1) for i, n in enumerate(TERMS)}
+        b = {n: (-a[n] if i % 2 else a[n]) for n, (i,j) in zip(TERMS, POWERS)}
+        np.testing.assert_allclose(simulate(a).counts, simulate(b).counts, atol=1e-9)
+        clipped = simulate({'D05': 500}, Config(energy_half_range_mev=40))
+        self.assertGreater(clipped.clipped_fraction, 0.001)
+        self.assertIsNone(clipped.metrics['fwhm_mev'])
 
     def test_extra_gaussian_in_quadrature(self):
         sigma = 4
@@ -129,9 +160,47 @@ class TrainingTests(unittest.TestCase):
         answer = {k: -v for k, v in exercise.initial.items()}
         np.testing.assert_array_equal(simulate(exercise.residual(answer)).counts, simulate().counts)
 
+    def test_default_third_order_seed_and_score_are_unchanged(self):
+        old = {'D10': -5.77, 'D01': -4.41, 'D20': -5.83, 'D11': 6.74, 'D02': 6.72,
+               'D30': -5.39, 'D21': 3.78, 'D12': 4.88, 'D03': -4.49}
+        q = new_exercise(42)
+        self.assertEqual(q.initial, coefficients(old))
+        self.assertEqual(q.max_order, 3)
+        self.assertAlmostEqual(q.feedback({})['normalized_rms'], np.sqrt(np.mean(np.square(list(old.values()))))/120)
+
+    def test_all_orders_reproducible_reachable_and_bounded(self):
+        baseline = simulate().counts
+        for order in range(1, 6):
+            eligible = terms_through(order)
+            for count in (1, len(eligible)):
+                for level in ('easy', 'medium', 'hard'):
+                    q = new_exercise(42, level, count, max_order=order)
+                    self.assertEqual(q, new_exercise(42, level, count, max_order=order))
+                    self.assertEqual(sum(v != 0 for v in q.initial.values()), count)
+                    self.assertTrue(all(q.initial[n] == 0 for n in TERMS if n not in eligible))
+                    self.assertLess(simulate(q.initial).clipped_fraction, 0.001)
+                    feedback = q.feedback({})
+                    self.assertEqual(feedback['eligible_terms'], eligible)
+                    self.assertEqual(feedback['max_order'], order)
+                    expected_score = np.sqrt(np.mean([q.initial[n]**2 for n in eligible]))/120
+                    self.assertAlmostEqual(feedback['normalized_rms'], expected_score)
+                    self.assertEqual(q.feedback(feedback['answer'])['normalized_rms'], 0)
+                    np.testing.assert_array_equal(simulate(q.residual(feedback['answer'])).counts, baseline)
+        for order in (4, 5):
+            sizes = [sum(v*v for v in new_exercise(42, level, len(terms_through(order)), max_order=order).initial.values())
+                     for level in ('easy', 'medium', 'hard')]
+            self.assertLess(sizes[0], sizes[1]); self.assertLess(sizes[1], sizes[2])
+        q = new_exercise(42)
+        with self.assertRaises(ValueError): q.feedback({'D04': 1})
+        with self.assertRaises(ValueError): q.residual({'D05': 1})
+
     def test_bad_training_inputs(self):
-        for args in ((-1,), (42, 'unknown'), (42, 'easy', 2), (True,)):
+        for args in ((-1,), (42, 'unknown'), (42, 'easy', 0), (42, 'easy', 10), (True,)):
             with self.assertRaises(ValueError): new_exercise(*args)
+        for kwargs in ({'max_order': True}, {'max_order': 6}, {'max_order': 0}, {'max_order': 4.0},
+                       {'max_order': 4, 'term_count': 15}, {'max_order': 5, 'term_count': 21},
+                       {'max_order': 1, 'term_count': 3}, {'max_order': 5, 'term_count': True}):
+            with self.assertRaises(ValueError): new_exercise(42, **kwargs)
 
 
 class DisplayExportTests(unittest.TestCase):
@@ -151,7 +220,7 @@ class DisplayExportTests(unittest.TestCase):
         self.assertEqual(locked.max(), 128)
 
     def test_export_lossless_and_pickle_free(self):
-        r = simulate({'D20': 15})
+        r = simulate({'D20': 15, 'D22': -4, 'D05': 7})
         original_width = r.metrics['fwhm_mev']
         png_bytes(r.counts, gamma=0.2)
         self.assertEqual(original_width, r.metrics['fwhm_mev'])
@@ -159,7 +228,10 @@ class DisplayExportTests(unittest.TestCase):
             np.testing.assert_array_equal(data['counts'], r.counts)
             np.testing.assert_array_equal(data['spectrum'], data['counts'].sum(axis=0))
             metadata = json.loads(str(data['metadata_json']))
-            self.assertEqual(metadata['effective_coefficients']['D20'], 15)
+            self.assertEqual(metadata['effective_coefficients'], coefficients({'D20': 15, 'D22': -4, 'D05': 7}))
+            self.assertEqual(metadata['model_version'], MODEL_VERSION)
+            self.assertEqual(metadata['terms'], list(TERMS))
+            self.assertEqual(metadata['powers'], [list(p) for p in POWERS])
             self.assertEqual(metadata['labels']['seed'], 42)
             self.assertEqual(metadata['units']['energy'], 'meV')
 

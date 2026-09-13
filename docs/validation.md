@@ -232,3 +232,43 @@ git diff --check
 本轮派生结果目录：`processed/validation/layout-v1/`，包含 `before-layout.txt`、`layout-boundary-check.txt`、`unit-http-tests.txt`、`browser-test.json`、`browser-desktop.png`、`browser-narrow.png`，以及七张 `layout-宽x高.png` 视口截图。已读取检查桌面、小桌面、1024 宽及 390 宽截图；旧版验证目录未覆盖。
 
 测试临时启动的本地服务和 Chromium 结束后停止；没有安装依赖、改动后端/原件、提交或操作用户服务/硬件。若用户服务仍运行，强制刷新页面即可加载新布局，无需重启后端。实际 Windows 浏览器缩放、字体差异及鼠标手感仍待用户试用；上述尺寸是浏览器内容视口的 CSS 像素，不是显示器标称分辨率。
+
+## 四/五阶、参数分页与练习最高阶（2026-09-13）
+
+用户要求加入可选择的四/五阶项、翻页时仍可观察图像，并能选择练习的最高阶。本节是当前扩展记录；前面各轮的九项行为及验证结果保留为历史记录。
+
+### 实现及兼容边界
+
+- `eels-effective-1.1` 按原无阶乘单项式约定扩为 20 项：四阶 `D40,D31,D22,D13,D04`，五阶 `D50,D41,D32,D23,D14,D05`。高阶默认零；不改变 8 meV 有效响应、卷积、采样、计数定义、测宽或 legacy。
+- 自由探索三页为一～三阶 9 项、四阶 5 项、五阶 6 项；所有页共同叠加，分页不模拟、不清零，不丢步长或在途帧。全部归零覆盖所有页；滚轮左键确认/Esc 快照扩展到完整系数，点击页签的第一次停止点击不穿透。
+- 练习最高 1～5 阶，默认 3；候选数为 2/5/9/14/20，按设定项数抽取。最高阶仅为上限，不保证稀疏题一定有最高阶非零项。选择器在新题时生效，重试/更新仍用当前题阶数；越阶非零补偿在服务端拒绝。答案表显示本题全部候选项，评分分母随本题候选数而非页码变化。
+- 原九项输入和别名兼容，但完整系数字典/`TERMS` 已变为 20 项。NPZ 保存规范 `terms`、`powers`、无阶乘约定及练习 `max_order`/`eligible_terms`，供后续数据对齐。此处仅扩展模拟和导出接口，没有训练神经网络；数学扩展不是仪器高阶标定。理由见 `docs/decisions/0002-higher-orders-and-parameter-pages.md`。
+
+### 实际检查
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/orders-v1
+git diff --check
+sha256sum raw/20260912/*
+```
+
+- 最终 **30 项 Python 单元/HTTP 测试通过，2.646 s**；两项 Node 语法检查通过。新增 11 个单项式的独立公式及跨阶叠加、每个高阶项实际改变图像、计数守恒、孔径奇偶等价、裁切告警、全阶域出题/补偿/归一化评分、越阶/非法输入、当前题状态保护及完整 NPZ 元数据检查。新 HTTP 元数据、四阶 14 项出题/揭示及既有同源/路径限制通过。
+- **修改之前**将当前零像差与默认种子 42 三阶题的计数数组及题目标签保存至 `before-regression.npz`。修改后用 `np.testing.assert_array_equal` 对比两份计数数组，均逐元素完全相同；原九项题目标签不变，仅补上 11 个高阶零值。基线 FWHM 仍为 **8.002032171109645 meV**；对比输出为 `numerical-regression.txt`。两份 raw 原件哈希与此前基线一致。
+- **Chromium 149.0.7827.55 实际浏览器 PASS**。默认页仍有九项可见；四阶页/五阶页各显示准确的 5/6 个控件。跨页调节 D01、D40、D22、D04、D05 后，隐藏页数值仍在同一帧；仅翻页不产生 `/api/frame` 请求，图谱、指标和系数不变；高阶帧在途时切页不会回退系数。
+- 五阶滚轮：D05=8，步长 0.25，上滚后 8.25，点四阶页签只确认停止，再点才换页；返回五阶后步长保留。下一次滚轮调整后 Esc 精确恢复 8.25 及其他页系数、图像、谱线和指标。全部归零恢复所有 20 项及基线。
+- 练习 1/2/3/4/5 阶分别抽取全部 2/5/9/14/20 项，浏览器揭示行数、越阶零值/禁用状态、精确补偿到基线和重试复原通过。最高阶草稿不改变当前五阶题或可用页，重试保持原阶数；新题才应用一阶设置。页签圆点不显示隐藏初始项。
+- 默认九项页继续通过 1920×1080、1600×900、1366×768、1280×660、1280×600 的同屏检查及原窄屏/2× 像素密度检查。四/五阶页分别在 **1280×600、1024×768、390×844** 检查所有行、滑块、数值、步长、滚轮按钮及光斑、能谱、FWHM 无遮挡/横向溢出；实际启用 D04/D05 并在图上滚轮调节，画面和参数始终可见，不随滚轮翻页，Esc 恢复通过。已读取检查四阶、五阶桌面及五阶窄屏截图，证据为视口图而非整页长截图。
+- 原有拖动/慢响应/模式边界/左键不穿透/Esc 迟到帧/亮度不改谱线检查全部继续通过。本次额外 80 ms 响应延迟下松手前仍显示 **6 帧**，最多一个模拟请求在途；未捕获 JS 异常或页面对外请求。
+- 浏览器内模拟缺少新字段的旧版 `/api/meta`，验证明确显示重启 `python3 run.py` 的提示，且不继续发送不兼容的帧请求。这是兼容分支测试，没有操作用户旧服务。
+- 本轮实施后的首轮及最终回归均通过，未遇到测试失败。差异空白检查通过。
+
+### 保存路径与未验证项
+
+修改 13 个现有文件：`src/eels_sim/{__init__,model,training,server}.py`、`src/eels_sim/web/{app.js,index.html,style.css}`、`tests/{test_model.py,test_server.py,browser_smoke.mjs}`、`README.md`、`docs/requirements.md`、本文件；新增 `docs/decisions/0002-higher-orders-and-parameter-pages.md`。
+
+派生证据独立保存在 **`processed/validation/orders-v1/`**：修改前 `before-regression.npz`、`numerical-regression.txt`、`unit-http-tests.txt`、首轮 `browser-run.txt`、最终 `browser-test.json`、默认页 `browser-desktop.png` / `browser-narrow.png` / `layout-*.png`，以及 `browser-order-4.png`、`browser-order-5.png`、`order-{4,5}-{1024x768,390x844}.png`。未覆盖旧轮验证目录或原始资料。
+
+本轮确实改动了后端，**需要用户自行在原终端停止并重新运行程序，再 Ctrl+F5**，不能只刷新。需保留当前会话时先导出；重启会重建会话。没有停止/重启用户服务、安装依赖、提交、部署或仪器操作；只临时启动/停止测试自己的本地服务和浏览器。Windows 实体鼠标/触控板、浏览器缩放及仪器准确性仍未验收。上述证据为离线合成模型与 Linux Chromium 检查，不是硬件接受测试。

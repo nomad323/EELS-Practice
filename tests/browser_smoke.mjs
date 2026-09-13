@@ -54,7 +54,7 @@ async function centre(id) {
 }
 async function assertWorkbenchVisible(description, allControls = true) {
   const result = await evaluate(`(() => {
-    const ids = ['spot','spectrum','fwhm', ...${allControls ? "names" : "['D03']"}.flatMap(n => ['row-'+n,'slide-'+n,'value-'+n,'wheel-toggle-'+n,'wheel-step-'+n])];
+    const ids = ['spot','spectrum','fwhm', ...${Array.isArray(allControls) ? JSON.stringify(allControls) : allControls ? "pageTerms(currentPage)" : "['D03']"}.flatMap(n => ['row-'+n,'slide-'+n,'value-'+n,'wheel-toggle-'+n,'wheel-step-'+n])];
     const headerBottom = document.querySelector('header').getBoundingClientRect().bottom;
     const banner = document.getElementById('wheel-session'), notice = banner.getBoundingClientRect();
     const boxes = {};
@@ -126,7 +126,8 @@ try {
   await command('Runtime.enable'); await command('Page.enable'); await command('Network.enable');
   await command('Emulation.setDeviceMetricsOverride', {width: 1600, height: 1150, deviceScaleFactor: 1, mobile: false});
   await command('Page.navigate', {url: `http://127.0.0.1:${port}/`}); await idle();
-  assert.equal(await evaluate(`document.querySelectorAll('.coefficient').length`), 9);
+  assert.equal(await evaluate(`document.querySelectorAll('.coefficient').length`), 20);
+  assert.equal(await evaluate(`document.querySelectorAll('.coefficient:not([hidden])').length`), 9);
   await command('Emulation.setDeviceMetricsOverride', {width: 1366, height: 768, deviceScaleFactor: 1, mobile: false});
   await assertWorkbenchVisible('desktop free mode');
   const baseline = Number(await evaluate(`document.getElementById('fwhm').textContent`));
@@ -352,13 +353,139 @@ try {
     await writeFile(join(root, artifactDirectory, width === 390 ? 'browser-narrow.png' : `layout-${width}x${height}.png`), Buffer.from(shot.data, 'base64'));
     await escape();
   }
+  // Fourth/fifth-order pages retain all coefficients and steps. Changing the
+  // displayed page must not request a simulation or deactivate off-page terms.
+  await command('Emulation.setDeviceMetricsOverride', {width: 1280, height: 600, deviceScaleFactor: 1, mobile: false});
+  await change('mode', 'free'); await evaluate('window.scrollTo(0,0)');
+  await change('value-D01', 2.5, 'input');
+  await pointerClick('page-4');
+  assert.equal(await evaluate('currentPage'), 4);
+  const fourth = ['D40','D31','D22','D13','D04'], fifth = ['D50','D41','D32','D23','D14','D05'];
+  assert.deepEqual(await evaluate(`names.filter(n => !document.getElementById('row-'+n).hidden)`), fourth);
+  await change('value-D40', 5, 'input'); await change('value-D22', -3, 'input'); await change('value-D04', 4, 'input');
+  await assertWorkbenchVisible('fourth-order free page', fourth);
+  const beforePage = await evaluate(stateExpression), requestsBeforePage = frameRequestCount();
+  await pointerClick('page-5');
+  assert.equal(await evaluate(stateExpression), beforePage, 'paging alone preserves all simulation data');
+  assert.equal(frameRequestCount(), requestsBeforePage, 'paging makes no frame request');
+  assert.deepEqual(await evaluate(`names.filter(n => !document.getElementById('row-'+n).hidden)`), fifth);
+  await change('value-D05', 7, 'input');
+  assert.equal(await evaluate('lastFrame.controls.D01'), 2.5);
+  assert.equal(await evaluate('lastFrame.controls.D22'), -3, 'off-page fourth-order term stays active');
+  assert.notEqual(await evaluate('lastFrame.image_png'), JSON.parse(beforePage).image, 'fifth-order term changes the image');
+  await assertWorkbenchVisible('fifth-order free page', fifth);
+  // Page switch while a fifth-order frame is still in flight must preserve it.
+  await evaluate(`window.fetch=window.__delayedFetch;document.getElementById('value-D05').value=8;document.getElementById('value-D05').dispatchEvent(new Event('input',{bubbles:true}))`);
+  await waitFor(() => evaluate('running'), 'high-order request in flight');
+  await pointerClick('page-4');
+  assert.equal(await evaluate('currentPage'), 4);
+  assert.equal(await evaluate('controls.D05'), 8);
+  assert.equal(await evaluate('lastFrame.controls.D05'), 8);
+  await evaluate('window.fetch=window.__originalFetch');
+  await pointerClick('page-5'); await change('wheel-step-D05', 0.25, 'input');
+  await pointerClick('wheel-toggle-D05'); await wheelAt('spot', -120);
+  await pointerClick('page-4');
+  assert.equal(await evaluate('currentPage'), 5, 'stopping click cannot also change the page');
+  assert.equal(await evaluate('controls.D05'), 8.25);
+  await pointerClick('page-4'); await pointerClick('page-5');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D05').value`), '0.25');
+  const highBeforeUndo = await evaluate(stateExpression);
+  await pointerClick('wheel-toggle-D05'); await wheelAt('spectrum', -120); await escape();
+  assert.equal(await evaluate(stateExpression), highBeforeUndo, 'high-order undo preserves previously adjusted terms on every page');
+  await pointerClick('zero');
+  assert.equal(await evaluate('Object.values(controls).every(v => v === 0)'), true, 'zero clears every page');
+  assert.equal(Number(await evaluate(`document.getElementById('fwhm').textContent`)), baseline);
+  // New maximum-order settings are drafts until a new question is requested.
+  await change('max-order', 5); await change('term-count', 20); await change('mode', 'practice');
+  assert.equal(await evaluate('lastFrame.question.max_order'), 5);
+  assert.equal(await evaluate('lastFrame.question.term_count'), 20);
+  assert.equal(await evaluate(`'feedback' in lastFrame`), false);
+  assert.equal(await evaluate(`document.querySelectorAll('.coefficient-pages .has-values').length`), 0, 'page badges must not reveal hidden initial terms');
+  await pointerClick('page-5');
+  const beforeDraft = await evaluate(practiceState);
+  await change('max-order', 1);
+  assert.equal(await evaluate(practiceState), beforeDraft);
+  assert.equal(await evaluate(`document.getElementById('page-5').disabled`), false, 'draft lower order does not change the current question');
+  await click('retry');
+  assert.equal(await evaluate('lastFrame.question.max_order'), 5);
+  assert.equal(await evaluate('lastFrame.question.term_count'), 20);
+  await click('new-question');
+  assert.equal(await evaluate('lastFrame.question.max_order'), 1);
+  assert.equal(await evaluate('currentPage'), 3);
+  assert.equal(await evaluate(`document.getElementById('page-4').disabled && document.getElementById('page-5').disabled`), true);
+  assert.equal(await evaluate(`document.querySelectorAll('.coefficient:not([hidden])').length`), 2);
+  // Each maximum admits only its own candidate terms; reveal and compensation
+  // span every eligible page, while retry preserves the question and its order.
+  for (const [order,count] of [[1,2],[2,5],[3,9],[4,14],[5,20]]) {
+    await change('max-order', order); await change('term-count', count); await click('new-question');
+    assert.equal(await evaluate('lastFrame.question.max_order'), order);
+    assert.equal(await evaluate(`names.filter(n => orders[n]>${order}).every(n => document.getElementById('value-'+n).disabled && controls[n]===0)`), true, 'out-of-scope controls are disabled and zero');
+    assert.equal(await evaluate(`'feedback' in lastFrame`), false);
+    await click('reveal');
+    assert.equal(await evaluate(`document.querySelectorAll('#answer-rows tr').length`), count);
+    assert.equal(await evaluate(`Object.values(lastFrame.feedback.initial).filter(v => v!==0).length`), count);
+    assert.equal(await evaluate(`names.filter(n => orders[n]>${order}).every(n => lastFrame.feedback.initial[n]===0)`), true);
+    const questionImage = await evaluate('lastFrame.image_png');
+    if (order >= 4) {
+      await pointerClick(`page-${order}`); await evaluate('window.scrollTo(0,0)');
+      const term = order === 4 ? 'D04' : 'D05', terms = order === 4 ? fourth : fifth;
+      await pointerClick(`wheel-toggle-${term}`);
+      const scroll = await wheelAt('spot', -120);
+      assert.equal(scroll.before, 0); assert.equal(scroll.after, 0);
+      await assertWorkbenchVisible(`order ${order} practice tuning, laptop viewport`, terms);
+      const shot = await command('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+      await writeFile(join(root, artifactDirectory, `browser-order-${order}.png`), Buffer.from(shot.data,'base64'));
+      await escape();
+      assert.equal(await evaluate('lastFrame.image_png'), questionImage);
+    }
+    await evaluate(`document.querySelectorAll('#answer-rows tr').forEach(row => {const el=document.getElementById('value-'+row.cells[0].textContent);el.value=Number(row.cells[3].textContent);el.dispatchEvent(new Event('input',{bubbles:true}));})`);
+    await idle();
+    assert.equal(await evaluate('lastFrame.feedback.normalized_rms'), 0);
+    assert.equal(Number(await evaluate(`document.getElementById('fwhm').textContent`)), baseline);
+    await click('retry');
+    assert.equal(await evaluate('lastFrame.question.max_order'), order);
+    assert.equal(await evaluate('lastFrame.image_png'), questionImage);
+    assert.equal(await evaluate('Object.values(controls).every(v=>v===0)'), true);
+  }
+  for (const [width,height] of [[1024,768],[390,844]]) {
+    await command('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
+    for (const [page,terms] of [[4,fourth],[5,fifth]]) {
+      await pointerClick(`page-${page}`);
+      await assertWorkbenchVisible(`narrow high-order page ${page}`, terms);
+      const term = terms.at(-1);
+      await pointerClick(`wheel-toggle-${term}`);
+      const scroll = await wheelAt('spot', -120);
+      assert.equal(scroll.before, scroll.after);
+      await assertWorkbenchVisible(`narrow active high-order page ${page}`, terms);
+      const shot = await command('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+      await writeFile(join(root, artifactDirectory, `order-${page}-${width}x${height}.png`), Buffer.from(shot.data,'base64'));
+      await escape();
+    }
+  }
+  // A refreshed frontend pointed at a still-running old backend must give an
+  // actionable restart message, not send unsupported 20-term frame requests.
+  const beforeOldBackend = frameRequestCount();
+  const oldMeta = await command('Page.addScriptToEvaluateOnNewDocument', {source: `
+    const nativeFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const response = await nativeFetch(...args);
+      if (args[0] !== '/api/meta') return response;
+      const meta = await response.json(); meta.terms = meta.terms.slice(0,9);
+      delete meta.max_order; delete meta.powers; delete meta.default_practice_order;
+      return new Response(JSON.stringify(meta), {headers:{'Content-Type':'application/json'}});
+    };`});
+  await command('Page.navigate', {url:`http://127.0.0.1:${port}/`});
+  await waitFor(() => evaluate(`document.getElementById('error')?.textContent.includes('后端版本过旧')`), 'old backend compatibility message');
+  assert.match(await evaluate(`document.getElementById('error').textContent`), /python3 run.py/);
+  assert.equal(frameRequestCount(), beforeOldBackend, 'incompatible backend receives no frame requests');
+  await command('Page.removeScriptToEvaluateOnNewDocument', {identifier:oldMeta.identifier});
   assert.deepEqual(exceptions, []);
   const external = requests.filter(url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:'));
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
     drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
-    checks: ['nine controls', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'button-only wheel activation', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'sticky plots during narrow last-row tuning', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
-    screenshots: [`${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`], temporary_profile: profile}, null, 2));
+    checks: ['20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'button-only wheel activation', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'sticky plots during narrow last-row tuning', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    screenshots: [`${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();
   for (const child of [browser, service]) {

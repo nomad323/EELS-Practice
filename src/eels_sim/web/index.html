@@ -14,7 +14,8 @@
     <div id="practice" hidden>
       <div class="practice-options">
         <label>难度<select id="difficulty"><option value="easy">初级</option><option value="medium" selected>中级</option><option value="hard">高级</option></select></label>
-        <label>隐藏项数<select id="term-count"><option value="1">单项</option><option value="3">三项</option><option value="9" selected>九项</option></select></label>
+        <label>最高阶<select id="max-order" title="从一阶到所选最高阶中抽题；点击出题后生效"><option value="1">一阶</option><option value="2">二阶</option><option value="3" selected>三阶</option><option value="4">四阶</option><option value="5">五阶</option></select></label>
+        <label>隐藏项数<select id="term-count"><option value="1">1 项</option><option value="3">3 项</option><option value="9" selected>全部 9 项</option></select></label>
         <label>种子<input id="seed" type="number" min="0" max="4294967295" step="1" value="42"></label>
         <div class="buttons"><button id="new-question">按种子出题</button><button id="random-question">随机新题</button><button id="retry">重试本题</button></div>
       </div>
@@ -22,11 +23,11 @@
     </div>
   </section>
   <div class="workbench">
-    <section class="panel tuning" aria-label="九项系数调节">
-      <div class="section-head"><h2>九项调节</h2><span class="hint">Dij · meV / 归一化角度幂</span></div>
-      <p class="tuning-help hint">滚轮：点按钮启用 · 左键保留停止 · Esc 撤销</p>
+    <section class="panel tuning" aria-label="一至五阶系数分页调节">
+      <div class="section-head"><h2>系数</h2><nav class="coefficient-pages" aria-label="参数分页"><button id="page-3" aria-controls="sliders" aria-pressed="true">一～三阶</button><button id="page-4" aria-controls="sliders" aria-pressed="false">四阶</button><button id="page-5" aria-controls="sliders" aria-pressed="false">五阶</button></nav></div>
+      <p class="tuning-help hint">翻页保留叠加 · meV · 滚轮：左键保留停止 / Esc 撤销</p>
       <div id="sliders"></div>
-      <div class="buttons"><button id="zero">全部归零</button><button id="reveal" hidden>查看答案 / 差距</button></div>
+      <div class="buttons"><button id="zero" title="清零所有参数页的系数，不只当前页">全部归零</button><button id="reveal" hidden>查看答案 / 差距</button></div>
     </section>
     <section class="panel monitor" aria-label="实时光斑与能谱">
       <div class="metrics">
@@ -45,7 +46,7 @@
     </section>
   </div>
   <p id="error" role="alert"></p>
-  <section id="feedback" class="panel" hidden><h2>答案与补偿差距</h2><p id="score"></p><div class="table-wrap"><table><thead><tr><th>项</th><th>初始 a</th><th>当前 c</th><th>答案 −a</th><th>残余 a+c</th></tr></thead><tbody id="answer-rows"></tbody></table></div><p class="hint">这是与生成标签的差距，不是实验测量误差。对称孔径可能存在图像等价解，单张图不保证唯一反演九个参数。</p></section>
+  <section id="feedback" class="panel" hidden><h2>答案与补偿差距</h2><p id="score"></p><div class="table-wrap"><table><thead><tr><th>项</th><th>初始 a</th><th>当前 c</th><th>答案 −a</th><th>残余 a+c</th></tr></thead><tbody id="answer-rows"></tbody></table></div><p class="hint">这是与生成标签的差距，不是实验测量误差。对称孔径可能存在图像等价解，单张图不保证唯一反演全部系数。</p></section>
   <div class="supplementary">
     <details id="scene-settings" class="panel"><summary>场景与采样</summary>
       <p class="hint">默认总响应 FWHM = 8 meV。以下为合成情景参数，不是真实 Cc 或仪器标定。</p>
@@ -73,9 +74,9 @@
         <div class="buttons"><button id="save-png">保存黑白光斑 PNG</button><button id="export">导出原始 NPZ（含答案标签）</button></div>
       </details>
       <details class="panel"><summary>模型说明与练习方法</summary>
-        <p id="mode-help" class="hint">九项可任意叠加。系数单位：meV / 归一化角度幂。</p>
+        <p id="mode-help" class="hint">一至五阶共 20 项，分三页调节。翻页不清零、不关闭其他页的系数，所有已调项共同叠加；页签圆点表示该页存在非零系数。系数单位：meV / 归一化角度幂。</p>
         <p>先设置步长，再点击该行“滚轮调节”：鼠标在页面任意位置滚动都只调这一项，不翻动网页。左键保留并停止；Esc 撤销本次调整。Dij 对应 uⁱvʲ，无阶乘。量程 ±120 是练习范围，不是设备控制限值。</p>
-        <p>自由模式从零开始，先单独观察 D01 的倾斜、D02 的弯曲，再叠加其他项。练习模式隐藏初始像差，滑块是你施加的补偿量，目标是让残余接近零。</p><p>无像差时是具有有限能量厚度的竖直带，而不是二维点。8 meV 是有效总能量响应（高斯 σ≈3.397 meV），不是色差系数 Cc。源、真实能角色差耦合、衍射和设备控制尚未标定；不能用本模型直接诊断仪器。</p><p>只追求最小 FWHM 可能遗漏长尾或多峰；同时观察形状、RMS 宽度和按需揭示的系数残差。自动亮度适合看形状，锁定亮度才适合比较峰值强弱。</p><p id="version"></p>
+        <p>自由模式从零开始，先单独观察 D01 的倾斜、D02 的弯曲，再叠加其他项。练习模式隐藏初始像差，滑块是你施加的补偿量，目标是让残余接近零。可选择最高一至五阶，再选择隐藏项数；候选项覆盖一阶至所选最高阶，不保证每题都抽中最高阶。点击出题后设置生效；重试保留原题的阶数。</p><p>无像差时是具有有限能量厚度的竖直带，而不是二维点。8 meV 是有效总能量响应（高斯 σ≈3.397 meV），不是色差系数 Cc。源、真实能角色差耦合、衍射和设备控制尚未标定；不能用本模型直接诊断仪器。</p><p>只追求最小 FWHM 可能遗漏长尾或多峰；同时观察形状、RMS 宽度和按需揭示的系数残差。自动亮度适合看形状，锁定亮度才适合比较峰值强弱。</p><p id="version"></p>
       </details>
     </div>
   </div>
