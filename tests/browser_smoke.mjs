@@ -129,6 +129,8 @@ try {
   await command('Emulation.setDeviceMetricsOverride', {width: 1600, height: 1150, deviceScaleFactor: 1, mobile: false});
   await command('Page.navigate', {url: `http://127.0.0.1:${port}/`}); await idle();
   assert.equal(await evaluate(`document.querySelectorAll('.coefficient').length`), 20);
+  assert.deepEqual(await evaluate(`names.map(n => document.getElementById('wheel-step-'+n).value)`), Array(20).fill('1'), 'all orders start with a 1 meV tuning step');
+  assert.equal(await evaluate(`document.getElementById('practice').hidden && document.getElementById('timer-start').disabled && document.getElementById('timer-stop').disabled`), true, 'timer is unavailable in free mode');
   assert.equal(await evaluate(`document.querySelectorAll('.coefficient:not([hidden])').length`), 9);
   await command('Emulation.setDeviceMetricsOverride', {width: 1366, height: 768, deviceScaleFactor: 1, mobile: false});
   await assertWorkbenchVisible('desktop free mode');
@@ -220,9 +222,9 @@ try {
   await key('Enter', {autoRepeat:true}); assert.equal(await evaluate('wheelTarget'), 'D02', 'held Enter cannot immediately confirm');
   const stepRequests = requests.filter(url => url.endsWith('/api/frame')).length;
   await key('ArrowUp');
-  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '1');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '10');
   await key('ArrowDown');
-  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '0.1');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '1');
   for (let i=0;i<5;i++) await key('ArrowDown');
   assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '0.01');
   for (let i=0;i<7;i++) await key('ArrowUp');
@@ -256,13 +258,13 @@ try {
   assert.equal(await evaluate(keyboardState), keyboardStart, 'normal row focus does not activate left/right tuning');
   await key('Enter');
   const keyboardScroll = await evaluate('JSON.stringify([scrollX,scrollY])');
-  await key('ArrowRight'); assert.equal(await evaluate('controls.D10'), 7.6);
-  assert.equal(await evaluate(`Number(document.getElementById('slide-D10').value) === 7.6 && Number(document.getElementById('value-D10').value) === 7.6 && lastFrame.controls.D10 === 7.6`), true, 'left/right synchronizes controls and final frame');
+  await key('ArrowRight'); assert.equal(await evaluate('controls.D10'), 8.5, 'default keyboard step is 1');
+  assert.equal(await evaluate(`Number(document.getElementById('slide-D10').value) === 8.5 && Number(document.getElementById('value-D10').value) === 8.5 && lastFrame.controls.D10 === 8.5`), true, 'left/right synchronizes controls and final frame');
   await key('ArrowLeft'); assert.equal(await evaluate(keyboardState), keyboardStart, 'one left step reverses one right step exactly');
   await key('ArrowUp'); await key('ArrowRight');
-  assert.equal(await evaluate('controls.D10'), 8.5, 'right uses the step just changed by Up');
+  assert.equal(await evaluate('controls.D10'), 17.5, 'right uses the step just changed by Up');
   await key('ArrowDown'); await key('ArrowLeft');
-  assert.equal(await evaluate('controls.D10'), 8.4, 'left uses the step just changed by Down');
+  assert.equal(await evaluate('controls.D10'), 16.5, 'left uses the step just changed by Down');
   assert.equal(await evaluate('wheelTarget'), 'D10');
   assert.equal(await evaluate('selectedTerm'), 'D10');
   assert.equal(await evaluate('controls.D01'), 2.25, 'keyboard only changes the active coefficient');
@@ -328,9 +330,9 @@ try {
     const heldScroll = await wheelAt(target, -120);
     assert.equal(heldScroll.after, heldScroll.before, `wheel over ${target} does not scroll the page`);
   }
-  assert.equal(await evaluate('controls.D10'), 7.8, 'three default wheel steps change only the selected coefficient');
+  assert.equal(await evaluate('controls.D10'), 7.8, 'three configured 0.1 wheel steps change only the selected coefficient');
   assert.equal(await evaluate('controls.D01'), 2.25, 'hovering another coefficient must not change it');
-  assert.equal(await evaluate(`document.getElementById('wheel-step-D01').value`), '0.1', 'native step editor cannot spin during global tuning');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D01').value`), '1', 'native step editor cannot spin during global tuning');
   const modifiedWheel = await evaluate(`(() => {
     const ctrl = new WheelEvent('wheel',{deltaY:-120,ctrlKey:true,bubbles:true,cancelable:true});
     const horizontal = new WheelEvent('wheel',{deltaX:120,bubbles:true,cancelable:true});
@@ -393,7 +395,7 @@ try {
   await doubleClick('wheel-toggle-D01');
   assert.equal(await evaluate(`document.querySelectorAll('.wheel-active').length`), 1);
   await wheelAt('value-D10', -120);
-  assert.equal(await evaluate('controls.D01'), 2.35);
+  assert.equal(await evaluate('controls.D01'), 3.25, 'default wheel step is 1');
   assert.equal(await evaluate('controls.D10'), 0);
   await pointerClick('wheel-toggle-D10');
   assert.equal(await evaluate('wheelTarget'), null, 'first left-click stops instead of switching targets');
@@ -420,6 +422,55 @@ try {
   await evaluate('window.fetch=window.__originalFetch');
   assert.equal(await evaluate(`document.getElementById('feedback').hidden`), true);
   assert.equal(await evaluate(`'feedback' in lastFrame`), false);
+  // Practice stopwatch is local UI state, independent of simulation frames.
+  const timerText = `document.getElementById('practice-time').textContent`;
+  async function assertTimerReset() {
+    assert.equal(await evaluate(timerText), '00:00:00.0');
+    assert.equal(await evaluate('practiceStartedAt === null && practiceInterval === null'), true);
+    assert.equal(await evaluate(`document.getElementById('timer-stop').disabled`), true);
+  }
+  await assertTimerReset();
+  const timerFrame = await evaluate('JSON.stringify(lastFrame)');
+  const timerRequests = requests.filter(url => url.endsWith('/api/frame')).length;
+  await pointerClick('timer-start');
+  assert.equal(await evaluate(`document.getElementById('timer-start').disabled && !document.getElementById('timer-stop').disabled`), true);
+  const firstStart = await evaluate('practiceStartedAt');
+  await click('timer-start');
+  assert.equal(await evaluate('practiceStartedAt'), firstStart, 'repeated start is ignored');
+  await waitFor(async () => (await evaluate(timerText)) !== '00:00:00.0', 'real stopwatch ticks');
+  await pointerClick('timer-stop');
+  const stoppedTime = await evaluate(timerText);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await evaluate(timerText), stoppedTime, 'stop freezes elapsed display');
+  assert.equal(await evaluate('practiceInterval'), null, 'stop releases interval');
+  assert.equal(await evaluate('JSON.stringify(lastFrame)'), timerFrame, 'start/stop do not alter question, controls or plots');
+  assert.equal(requests.filter(url => url.endsWith('/api/frame')).length, timerRequests, 'timer sends no simulation requests');
+  // Deterministic elapsed clock jump stands in for a delayed background paint.
+  await evaluate(`window.__timerNow=1000;Object.defineProperty(performance,'now',{configurable:true,value:()=>window.__timerNow})`);
+  await pointerClick('timer-start');
+  assert.equal(await evaluate(timerText), '00:00:00.0', 'restart begins at zero, not a resume');
+  await evaluate('window.__timerNow += 3661123; renderPracticeTimer()');
+  assert.equal(await evaluate(timerText), '01:01:01.1', 'hours/minutes roll over using elapsed time, not callback count');
+  const preservedStart = await evaluate('practiceStartedAt');
+  await click('reveal'); await click('reveal'); await click('zero');
+  await change('difficulty', 'easy'); await change('difficulty', 'medium');
+  assert.equal(await evaluate('practiceStartedAt'), preservedStart, 'answers, zero and draft settings do not reset timer');
+  await doubleClick('wheel-toggle-D11');
+  await pointerClick('timer-stop');
+  assert.equal(await evaluate('wheelTarget'), null);
+  assert.equal(await evaluate('practiceStartedAt'), preservedStart, 'first tuning click confirms only, without stopping timer');
+  await pointerClick('timer-stop');
+  assert.equal(await evaluate(timerText), '01:01:01.1');
+  for (const action of ['retry','new-question','random-question']) {
+    await pointerClick('timer-start');
+    await evaluate('window.__timerNow += 1500; renderPracticeTimer()');
+    await pointerClick(action); await assertTimerReset();
+  }
+  await change('seed', 42); await click('new-question');
+  await pointerClick('timer-start'); await change('mode', 'free'); await assertTimerReset();
+  assert.equal(await evaluate(`document.getElementById('practice').hidden && document.getElementById('timer-start').disabled`), true);
+  await change('mode', 'practice'); await assertTimerReset();
+  await evaluate('delete performance.now');
   await click('reveal');
   assert.equal(await evaluate(`document.getElementById('feedback').hidden`), false);
   assert.equal(await evaluate(`document.querySelectorAll('#answer-rows tr').length`), 9);
@@ -440,7 +491,29 @@ try {
   // Revealed answers and expanded setup must not push the tuning controls down.
   await evaluate(`document.getElementById('scene-settings').open=true;document.getElementById('display-info').open=true`);
   await mkdir(join(root, artifactDirectory), {recursive: true});
-  const layoutSizes = [[1920,1080],[1600,900],[1366,768],[1280,660],[1280,600]];
+  const layoutSizes = [[3072,1728],[2560,1440],[1920,1080],[1600,900],[1366,768],[1280,660],[1280,600]];
+  const readableLayouts = [];
+  async function assertReadableLayout(width, height, dpr) {
+    const sizes = await evaluate(`(() => {
+      const root = parseFloat(getComputedStyle(document.documentElement).fontSize);
+      const input = document.getElementById('value-D10'), row = document.getElementById('row-D10');
+      return {root, input:parseFloat(getComputedStyle(input).fontSize), inputHeight:input.getBoundingClientRect().height,
+        label:parseFloat(getComputedStyle(row.querySelector('label')).fontSize), rowHeight:row.getBoundingClientRect().height,
+        canvasFont:parseFloat(document.getElementById('spectrum').getContext('2d').font),
+        zoom:getComputedStyle(document.documentElement).zoom, dpr:devicePixelRatio};
+    })()`);
+    assert.ok(sizes.root >= 12 && sizes.root <= 20, 'bounded fluid type, never shrink compact controls');
+    if (width >= 1920 && height >= 1000) {
+      assert.ok(sizes.root >= 18 && sizes.input >= 18 && sizes.label >= 16,
+        `large-screen controls must be readable, not fixed 9–12px: ${JSON.stringify(sizes)}`);
+      assert.ok(sizes.inputHeight >= 28 && sizes.rowHeight >= 45, 'control hit areas grow with type');
+      assert.ok(sizes.canvasFont >= 18, 'plot tick labels must grow too');
+    }
+    if (width === 1280 && height === 600) assert.equal(sizes.root, 12, 'keep short-laptop compact baseline');
+    assert.ok(['1','normal'].includes(sizes.zoom), 'no CSS zoom workaround');
+    assert.equal(sizes.dpr, dpr);
+    readableLayouts.push({width,height,...sizes});
+  }
   const beforeResize = await evaluate(stateExpression);
   const frameRequestCount = () => requests.filter(url => url.endsWith('/api/frame')).length;
   const requestsBeforeResize = frameRequestCount();
@@ -448,10 +521,20 @@ try {
     await command('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: false});
     await evaluate('window.scrollTo(0,0);new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     await assertWorkbenchVisible('desktop practice with answers and scene expanded');
+    await assertReadableLayout(width, height, 1);
     assert.equal(await evaluate(`[document.getElementById('spot'),document.getElementById('spectrum')].every(c => c.width === Math.round(c.clientWidth*devicePixelRatio) && c.height === Math.round(c.clientHeight*devicePixelRatio) && c.getContext('2d').getImageData(0,0,c.width,c.height).data.some((v,i) => i%4!==3 && v>0))`), true, 'resize redraws both canvases at the displayed resolution');
     const shot = await command('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
     await writeFile(join(root, artifactDirectory, `layout-${width}x${height}.png`), Buffer.from(shot.data, 'base64'));
   }
+  // Representative large Windows viewport at 150% pixel density, not an
+  // inferred exact replay of the owner's screenshot/browser zoom settings.
+  await command('Emulation.setDeviceMetricsOverride', {width: 1984, height: 1066, deviceScaleFactor: 1.5, mobile: false});
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await assertWorkbenchVisible('large Windows-like high-DPI desktop');
+  await assertReadableLayout(1984, 1066, 1.5);
+  assert.equal(await evaluate(`[document.getElementById('spot'),document.getElementById('spectrum')].every(c => c.width === Math.round(c.clientWidth*1.5) && c.height === Math.round(c.clientHeight*1.5))`), true, 'fractional-DPI buffers follow CSS dimensions');
+  const largeShot = await command('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+  await writeFile(join(root, artifactDirectory, 'layout-1984x1066-dpr1.5.png'), Buffer.from(largeShot.data,'base64'));
   await command('Emulation.setDeviceMetricsOverride', {width: 1366, height: 768, deviceScaleFactor: 2, mobile: false});
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   await assertWorkbenchVisible('high-DPI desktop');
@@ -463,7 +546,7 @@ try {
   // Actually tune the last coefficient without scrolling at laptop size.
   await doubleClick('wheel-toggle-D03');
   const lastRowScroll = await wheelAt('spot', -120);
-  assert.equal(await evaluate('controls.D03'), 0.1);
+  assert.equal(await evaluate('controls.D03'), 1);
   assert.equal(lastRowScroll.before, 0);
   assert.equal(lastRowScroll.after, 0);
   await assertWorkbenchVisible('last coefficient active, no scrolling');
@@ -479,14 +562,14 @@ try {
     await doubleClick('wheel-toggle-D03');
     const held = await wheelAt('spot', -120);
     assert.equal(held.after, held.before);
-    assert.equal(await evaluate('controls.D03'), 0.1);
+    assert.equal(await evaluate('controls.D03'), 1);
     await assertWorkbenchVisible('narrow active all nine rows and sticky plots');
     await key('ArrowUp');
     assert.equal(await evaluate('selectedTerm'), 'D03');
-    assert.equal(await evaluate(`document.getElementById('wheel-step-D03').value`), '1');
+    assert.equal(await evaluate(`document.getElementById('wheel-step-D03').value`), '10');
     await key('ArrowDown'); await key('ArrowLeft');
     assert.equal(await evaluate('controls.D03'), 0);
-    await key('ArrowRight'); assert.equal(await evaluate('controls.D03'), 0.1);
+    await key('ArrowRight'); assert.equal(await evaluate('controls.D03'), 1);
     await assertWorkbenchVisible('narrow keyboard single-step tuning remains same-screen');
     const shot = await command('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
     await writeFile(join(root, artifactDirectory, width === 390 ? 'browser-narrow.png' : `layout-${width}x${height}.png`), Buffer.from(shot.data, 'base64'));
@@ -634,6 +717,11 @@ try {
   assert.equal(await evaluate('JSON.stringify({question:lastFrame.question,feedback:lastFrame.feedback})'), strongQuestion, 'widening the field does not change question, answer or score');
   assert.ok(await evaluate('lastFrame.clipped_fraction < 0.001'));
   assert.doesNotMatch(await evaluate(`document.getElementById('warnings').textContent`), /扩大能量视野/);
+  // Refresh clears page-local stopwatch and restores every coefficient step.
+  await pointerClick('timer-start');
+  await command('Page.navigate', {url:`http://127.0.0.1:${port}/`}); await idle();
+  await assertTimerReset();
+  assert.deepEqual(await evaluate(`names.map(n => document.getElementById('wheel-step-'+n).value)`), Array(20).fill('1'));
   // A refreshed frontend must reject both nine-term and twenty-term backends
   // still using the old shared-budget generator, with an actionable message.
   for (const legacyKind of ['nine-term', 'shared-budget']) {
@@ -661,8 +749,8 @@ try {
   const external = requests.filter(url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:'));
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
-    drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
-    checks: ['per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, readable_layouts: readableLayouts, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
+    checks: ['all twenty initial steps are 1 meV', 'practice timer start/stop/restart and duplicate start', 'elapsed clock jump and hour/minute formatting', 'timer reset on new/retry/mode/refresh', 'timer does not simulate or alter question', 'timer respects tuning confirmation click', 'per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
     screenshots: [`${artifactDirectory}/difficulty-medium-20.png`, `${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();

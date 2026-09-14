@@ -401,3 +401,152 @@ git diff --check
 - 结果及视口截图保存至 `processed/validation/arrow-nudge-v1/`，汇总为 `browser-test.json`；已读取检查桌面及 390 宽截图，未覆盖旧验证目录。
 
 测试临时回环服务/浏览器已停止；未操作用户服务、安装依赖、提交、部署或连接仪器。先按需导出当前会话，再 Ctrl+F5 加载，无需重启后端。Windows 实际按键/长按手感与 WSL2 转发仍待用户验收。
+
+## 轻量 Windows 便携版启动与关闭页面退出（2026-09-14）
+
+### 实现与交付状态
+
+用户要求 Windows 打包、自动打开浏览器、关闭对应网页后结束程序，并避免臃肿。新增独立便携入口及 Windows 构建脚本；使用系统默认浏览器，不嵌入 Electron/Chromium，不增加运行依赖。原 `run.py` 手动启停、模型/标签和原件不变。打包为 onedir 便携文件夹 + ZIP，而非每次启动需解压运行库的 onefile。
+
+每实例随机回环端口及令牌，用 SSE socket 存活代替 JS 定时心跳；最后一条页面连接断开后留 5 秒刷新宽限，再关闭监听并退出。首次页面 90 秒未连接时提示退出；多标签、重复双击的独立实例、后台冻结和崩溃的取舍见 `docs/decisions/0004-portable-browser-lifetime.md`。不会结束默认浏览器进程或无关标签。
+
+**本轮没有生成 Windows exe，也没有安装 PyInstaller/Windows Python 或构建依赖。** Windows 构建脚本已编写并做命令/保护分支测试，但 PyInstaller、DLL/许可证收集和生成二进制的自检尚未在 Windows 执行。不能将源码运行的自检或源码 ZIP 体积当作 Windows 成品证据。
+
+### 实际执行的检查
+
+环境沿用 Linux/WSL2、Python 3.14.4、NumPy 2.3.5、Pillow 12.1.1、Node 22 与已有 Chromium 149.0.7827.55，无下载或外部检索。
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 run_desktop.py --self-test processed/validation/desktop-v1/source-self-test-final.json
+node tests/desktop_browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/desktop-v1/ui-regression
+python3 -m compileall -q src run.py run_desktop.py tools tests
+node --check src/eels_sim/web/desktop.js
+node --check src/eels_sim/web/app.js
+node --check tests/desktop_browser_smoke.mjs
+node --check tests/browser_smoke.mjs
+git diff --check
+```
+
+- 最终 **46 项 Python 测试全部通过，9.476 s**。新增生命周期状态测试（首次超时、刷新/最后标签宽限、禁止超时后复活、长期无 JS 心跳仍保活）、真实 HTTP SSE 连接/断开与多连接、错误令牌/非 ASCII 令牌/Host/Origin/跨站拒绝、启动失败关闭监听、无首次页面时退出、自动退出释放端口、资源/PNG/NPZ 自检、Windows 构建命令及拒绝 Linux/覆盖已有输出。原手动服务器的便携控制接口返回 404。
+- 首轮存在一次真实失败：新 `tests/test_packaging.py` 中多余右括号导致测试模块 SyntaxError，首次运行 44 项中有 1 项导入错误。修正后第二轮及最终 46 项均通过。保留 `unit-http-tests.txt` 原失败输出；最终为 `unit-http-final-v2.txt`。其中 argparse 的“必须使用 Windows x64”是被断言的拒绝分支，不是最终测试失败。
+- 源码入口 `--self-test` **PASS**：实际绑定临时回环 HTTP，读取四个网页资源、模拟零像差、编码 PNG、导出/读取 NPZ；FWHM **8.002032171109645 meV**。最终报告明确 `frozen: false`，只是源码验证。自检函数避免依赖 NumPy testing 模块；Windows 构建脚本要求生成 exe 的报告为 `frozen: true` 才产出 ZIP。
+- 新便携生命周期 **两轮实际 Chromium 检查 PASS**：测试只替换 OS 默认浏览器打开函数为捕获 URL，随后用真实 Chromium 导航；未调用 Windows 默认浏览器关联。实际刷新生成新会话并重连；复制两标签后关一个，等待 8 秒仍活着；剩余页面 JS 冻结 8 秒仍活着，恢复正常；关闭最后一页后进程退出且端口不可连接。首次退出 **7.497 s**，加强窄屏检查后的最终轮 **6.987 s**。不是所有 Windows 机器的延迟保证。
+- 与程序无关的浏览器标签仍存在，浏览器进程不被程序退出逻辑结束。再启动两个独立实例，端口不同；关闭一个不影响另一个；强制终止测试自己的 Chromium（无 pagehide）后，剩余实例仍自动退出并释放端口。未捕获 JS 异常。新增便携状态提示在 390×844 无横向溢出。
+- 原有完整 UI/算法交互浏览器回归 **PASS**：九项/高阶分页、全阶练习、深色配色、桌面/窄屏同屏、键盘/滚轮事务、迟到帧、连续拖动和导出相关接口继续通过。基线显示 8.002 meV，额外延迟拖动测试松手前 6 帧；无捕获 JS 异常或应用外部请求。该完整交互测试使用原手动服务，便携入口另由上述生命周期测试验证。
+- Python 编译、四项 Node 语法及差异空白检查通过。raw 四个文件 SHA256 与此前记录完全一致；未改模型、legacy、PLAN、AGENTS、管理日志或用户运行服务。
+
+### 实际保存的文件
+
+- 新增入口/生命周期：`run_desktop.py`、`src/eels_sim/desktop.py`、`src/eels_sim/web/desktop.js`。
+- 新增构建材料：`requirements-build.txt`、`tools/build_windows.py`、`tools/portable-readme.txt`、`tools/build-kit-readme.txt`。
+- 新增测试：`tests/test_desktop.py`、`tests/test_packaging.py`、`tests/desktop_browser_smoke.mjs`；更新 `tests/test_server.py`。
+- 小改 `src/eels_sim/server.py`（网页白名单和可选 handler）、`src/eels_sim/web/index.html`（独立脚本）、`.gitignore`（独立构建环境）；更新 README/需求/本记录，新增决定 0004。
+- 测试证据：`processed/validation/desktop-v1/` 中的 `unit-http-*.txt`、`source-self-test*.json`、`desktop-browser*.txt`、`ui-browser.txt` 和 `ui-regression/` 视口截图。保留既有验证目录；本轮未逐张人工读取新回归截图，不以自动通过冒充人工逐像素检查。
+- 可转移的 **源码打包材料**：`processed/releases/windows-build-kit-20260914/EELS-Practice-build-kit.zip`，23 个文件、**54,767 字节**。只包含必要源码/网页、构建脚本、测试及两份简明说明，不含原件、截图、Git/环境。ZIP 完整性检查通过；另解压至临时目录实际运行 **46 项测试、1 项因 raw 未分发而跳过，其余通过**，输出为 `build-kit-tests.txt`。报告在同目录 `build-kit-report.json`，SHA256 `66a49c0f3e0d58860084e54f244e1078fcd02d04445a691784fa0e7afe29a089`。这是构建材料，不是 Windows 软件成品大小。
+
+测试创建的服务与浏览器已停止；未停止用户服务、安装依赖、提交、部署、修改系统配置或控制仪器。浏览器临时 profile 留在 `/tmp/eels-desktop-browser-*` 与 `/tmp/eels-browser-*`，没有复用个人资料。
+
+### 待 Windows 构建与目标机验收
+
+1. 经用户确认，在 Windows x64 独立环境安装构建依赖并运行 `tools/build_windows.py`；确认生成 exe 的离线自检 PASS/frozen=true、实际体积/版本/SHA256、第三方许可，保留旧包。材料包/README 有步骤，脚本不会安装依赖。
+2. 在无开发环境的使用端解压成品 ZIP，普通用户权限、中文/空格路径双击；确认默认浏览器自动打开、PNG/NPZ 下载、20 项调节可用。不应需要 Python/WSL/Node 或管理员权限；这是待验收目标，不是本轮实测结果。
+3. 验证刷新不误退出、两个程序标签关一个继续/关完退出、任务管理器中程序退出、端口释放；不影响其他浏览器页面。测试后台/睡眠标签、机器休眠恢复、浏览器崩溃及独立实例；主动丢弃页面可能需重新双击启动。
+4. 检查默认浏览器失败与首次无页面连接的错误提示、签名/SmartScreen/安全软件信誉，不关闭安全软件绕过。当前无代码签名或 Windows 兼容性证据。
+5. 如有问题停止便携版，使用保留的旧包或原 `python3 run.py` 手动入口回退。以上都是软件验收，不是仪器/物理模型或硬件安全验收。
+
+## Windows x64 实际构建与成品验证（2026-09-14）
+
+### 授权、环境与成品
+
+用户在明确询问是否允许 Windows 独立构建环境/必要依赖安装后回复“做吧”，随后两次要求继续。本轮只使用 Windows 已有 Python，在新的临时 venv 安装构建依赖并执行本地软件验证；不修改系统 Python、WSL 依赖、默认浏览器关联、目录权限、防火墙/注册表或开机启动。原件和模型源码未改，没有提交、部署或仪器操作。
+
+实际 Windows 11 x64（10.0.26200）、Python **3.14.5**，独立环境安装 NumPy **2.5.3**、Pillow **12.3.0**、PyInstaller **6.22.3**；其他依赖的实际 `pip freeze` 见 `processed/validation/windows-build-v1/pip-freeze.txt`。通过 pip 显式指定 PyPI、只使用二进制 wheel 安装，没有上传项目源码或原始资料。复用旧 pip 缓存时出现若干反序列化警告，pip 忽略坏缓存项后安装成功，不是构建失败。
+
+实际命令（具体临时路径由构建过程选择，以下以相对路径表示）：
+
+```powershell
+py -3.14 -m venv .venv-build-windows
+.\.venv-build-windows\Scripts\python.exe -m pip --isolated --disable-pip-version-check install --index-url https://pypi.org/simple --only-binary=:all: -r requirements-build.txt
+.\.venv-build-windows\Scripts\python.exe tools\build_windows.py
+```
+
+成品保存于 **`processed/releases/windows-20260914-180130-633479/`**：
+- `EELS-Practice-windows-x64.zip`：**28,533,526 字节（27.2 MiB）**，ZIP 完整性及复制后的 SHA256 检查通过。
+- `EELS-Practice/`：完整便携目录，实际文件总大小 **64,257,459 字节（61.3 MiB）**；包括 exe、`_internal`、使用说明及第三方许可。不含项目 raw、Git、开发环境或浏览器引擎；冻结包中四个网页资源与项目源文件逐字节一致。
+- SHA256：**`d83d2daf339e5852b7b8f77c14aaa9437e81fdab9811f50439457550c6af653d`**。
+- `build-report.json`、`self-test.json`、`build-dependencies.txt`；后续新增 `edge-browser-report.json`、`chrome-browser-report.json`。构建时报告中 `windows_browser_acceptance: NOT RUN` 保留原状，后续浏览器证据见另外两份报告，不倒改构建时记录。
+
+同一 ZIP 另复制到 Windows 可直接访问的 **`%LOCALAPPDATA%\Temp\EELS-native-build-lty_k2hh\release`**，不是安装路径；用户应将 ZIP 保存到常用位置并完整解压。Windows 临时构建环境、测试私有 profile 和重定位测试文件保留在同一个临时父目录，未擅自删除；它们不在便携 ZIP 内。
+
+### 实际验证
+
+1. **Windows 源码测试：46 项运行，45 项通过，1 项跳过，11.562 s。** 跳过项是未复制到构建材料中的 raw 原脚本对照；固定 legacy 数值回归仍通过。包括 Windows 上真实 socket 多连接/断开、启动错误/超时退出、模型和 PNG/NPZ 回归。日志：`build-native.txt`。
+2. **生成的 exe 自检 PASS，frozen=true**。实际启动回环 HTTP、读取打包网页、执行 NumPy 模拟/Pillow PNG 编码/NPZ 导出及读取，基线 FWHM **8.002032171109645 meV**。构建脚本从另一含中文及空格的工作目录运行它，自检通过后才产出 ZIP。
+3. 将成品 ZIP **重新解压到中文/空格路径**，清除应用子进程环境中的 Python 路径变量并把 PATH 限制到 Windows 系统目录，再运行 exe 自检，仍 PASS。此测试不依赖 Python PATH，但不是在一台完全未安装 Python 的干净 Windows 虚拟机上验证。
+4. 新增可复用测试 **`tests/windows_binary_smoke.py`**：只用标准库和已有浏览器，以私有 profile/回环 DevTools 控制实际 Windows 浏览器，不增加测试下载依赖，不操作个人浏览器资料。给 exe 子进程设置 `BROWSER` 捕获其真实启动 URL，再由隔离浏览器打开；**没有修改成品 exe，也没有验证系统默认浏览器关联**。
+5. **Edge 153.0.4234.32 / Chrome 152.0.7977.84 均 PASS**：实际页面渲染、SSE 连接、基线显示 **8.002 meV**；真正刷新会重建会话且服务继续；两标签关一个后等待 8 秒仍运行；剩余页面 JS 冻结 8 秒不误退出、恢复后正常。关闭最后一个程序标签后，exe 正常退出并释放端口，分别为 **6.342 s / 7.372 s**；无关测试标签仍在，未捕获 JS 异常。
+6. 浏览器结果位于 `processed/validation/windows-build-v1/{edge,chrome}/`，各有 `windows-browser-report.json`、`relocated-self-test.json`、`windows-ui.png` 和浏览器 stderr。已实际读取两张截图，确认深色 UI、白色光斑/谱线和 FWHM 渲染；默认无头小视口需滚动，不能把这些截图当成所有九项同屏的新证据。本轮没有在 Windows 重新跑全部滚轮/高阶交互，完整交互证据仍来自前轮 Linux Chromium。
+7. 测试结束核查：**0 个 EELS 成品测试进程，0 个带本轮私有 profile 的 Chrome/Edge 测试进程残留**。没有结束用户已有浏览器、其他页面或用户服务。
+
+### 失败、警告与修正
+
+- 最初从 WSL 项目目录启动 Windows PowerShell 返回 `Invalid argument`，改从 `/mnt/c` 调用后成功；进一步 Windows 访问 WSL UNC 项目路径被拒绝。未修改权限，改用独立 Windows 临时目录，复制经过检查的最小源码材料继续构建。
+- 一次环境检查命令的引号转义导致 `python -c` SyntaxError；后续使用独立 PowerShell 脚本和已有 Python 入口，不将这个失败当作 Python 不可用。
+- WSL 向新 NTFS 文件 `copy2` 写内容后设置时间戳失败（Operation not permitted）。核对文件字节完整一致后执行；后续跨文件系统复制仅用 `copyfile`，不改权限或强行设置文件元数据。
+- 第一次 Windows 浏览器测试脚本把不区分大小写的 `os.environ` 转成普通字典后读取 `SystemRoot`，触发 KeyError；修正为直接从 `os.environ` 读取。此时尚未运行成品。第二次尝试 Chrome `--dump-dom` 超时 45 秒、输出为空，未获得页面证据；测试只终止自己启动的程序，随后核查无私有 Chrome 残留。没有将其根因冒充成品缺陷或宣称该轮通过。
+- 改为标准库 WebSocket/CDP 的显式页面就绪/刷新/关闭检查，从 Windows PowerShell 调用测试，之后 Edge 与 Chrome 两轮均成功。初始失败日志分别为 `windows-browser-smoke.txt`、`windows-browser-smoke-v2.txt`；成功为 `windows-browser-smoke-v3.txt`、`windows-browser-smoke-v4.txt`。
+- PyInstaller 发出缺失可选/平台模块、NumPy 动态属性等静态分析警告，保留在 `pyinstaller-warnings.txt`。没有为了消除全部静态警告而安装无关大型包；已执行的 exe 自检和上述浏览器路径通过，不等于所有未使用的 Pillow 格式或可选 NumPy 功能均被验证。
+
+### 改动及剩余验收
+
+本轮新增 `tests/windows_binary_smoke.py`，更新 `README.md`、`docs/requirements.md`、本记录和决定 0004 的交付状态；程序实现、构建脚本、依赖范围、模型与原件未改。新二进制及验证证据仅位于上述 `processed/` 和 Windows 独立临时目录。旧源码材料 ZIP 保留为先前快照，内含“未生成 exe”的说明是历史状态，不代表现在的成品状态。
+
+剩余：请用户完整解压、正常双击 exe，确认默认浏览器打开、鼠标/键盘手感和下载保存对话框；检查未签名软件的 SmartScreen/安全软件信誉。未在 Windows 10、ARM64、完全无开发环境的新机器、机器休眠/睡眠标签或各类安全软件组合上验收；未测试硬件，不提供仪器安全结论。不要关闭防火墙或安全软件来绕过问题。
+
+## 大屏字体与控件偏小修复（2026-09-14）
+
+### 反馈与诊断
+
+用户先反馈 exe 网页“打开很小”，后澄清“在 raw 里，应该是窗口正常字体和控件小”。实际读取 `raw/20260914/屏幕截图 2026-09-14 191434.png`（**3072×1920 物理像素**）：窗口已铺开，页面字体/控件相对浏览器界面偏小；地址栏有缩放指示，但**未确定具体倍率、系统缩放或真实 CSS 视口**，不推定为某个缩放百分比。没有修改或向外发送截图，也未读取个人浏览器配置/历史。
+
+检查旧成品 ZIP：`index.html`、`style.css`、`app.js`、`desktop.js` 与项目源码逐字节一致，未发现打包引入的额外页面缩放。旧桌面样式的基础字为 12px、行标签 11px、小标签 9px，控件宽高固定；主要图谱文字也固定 12px。旧 Windows 自动截图只取无头默认小视口，不能证明真实大屏可读性，上一轮在此验收覆盖不足。
+
+### 实现及回归
+
+- `src/eels_sim/web/style.css`：桌面字号、控件尺寸、列宽、间距及图谱高度上下限共用 rem 尺度；以 CSS 视口宽、高约束基础字号 **12～20px**。保留窄屏规则及短窗口紧凑布局、深色配色；不使用 CSS zoom 或修改浏览器窗口/系统缩放。
+- `src/eels_sim/web/app.js`：Canvas 刻度字号及轴边距按同一尺度绘制，backing buffer 仍按 DPR；仅重画已有帧，不修改模拟、导出、出题或能量视野。
+- 扩展 `tests/browser_smoke.mjs` 和 `tests/windows_binary_smoke.py`，加入真实字体/行高/输入框尺寸、大屏几何、分数 DPR、缩放前后数据不变检查；更新 `tools/portable-readme.txt` 和 README/需求/本记录。入口、退出机制、服务端及模型代码本轮未改。
+- **先验证测试能抓到旧问题**：新浏览器断言在旧代码的 3072×1728 视口失败，实测 root/input/Canvas 字体均 12px、行标签 11px、输入框高 20.391px、行高 35.984px。失败保留为 `processed/validation/ui-scale-v1/browser-before.txt`。
+- **修改后 Linux 全套浏览器回归 PASS**，含此前键盘/滚轮事务、20 项高阶分页、连续拖动、同屏和无额外模拟请求检查；证据 `browser-after.txt`、`after/`。桌面覆盖 1280×600/660、1366×768、1600×900、1920×1080、2560×1440、3072×1728，窄屏 1024×768、720×720、390×844；另测 1984×1066 / DPR 1.5 与 1366×768 / DPR 2。代表性高 DPI 视口不是用户截图的精确重放。
+- **Linux Python 46 项全部通过，9.827 s**，日志 `unit-http.txt`；JS 语法检查、Windows 测试脚本 Python 编译和 `git diff --check` 通过。
+
+主要实测 CSS 尺寸（Linux Chromium 与 Windows Edge/Chrome 对下列共同检查点一致）：
+
+| 视口 | 基础/输入字号 | 行标签字号 | 参数行高度 |
+| --- | ---: | ---: | ---: |
+| 1280×600 | 12px | 11px | 31.984px（原短屏规则） |
+| 1920×1080 | 19.2px | 17.6px | 56.375px |
+| 1984×1066 / DPR 1.5 | 19.188px | 17.589px | 56.328px |
+| 3072×1728 | 20px | 18.333px | 58.641px |
+
+九项参数、两幅图及 FWHM 在这些视口完整可见、无横向溢出；高 DPI 缓冲尺寸匹配实际 Canvas CSS 大小。已实际读取 Linux 大屏/短屏截图，以及 **Windows Edge 1984×1066 / DPR 1.5 和 Chrome 1920×1080** 成品截图，确认文字、控件及刻度变大，保持原深色 UI 和基线 8.002 显示。用户真实屏幕的舒适字号仍需用户确认。
+
+### Windows 成品、实际检查与失败保留
+
+复用此前用户批准的隔离 Windows venv，**无新依赖安装**；实际 `pip freeze` 与前轮逐字相同。复制最小当前源码到新的 `EELS-Practice-ui-scale-build` 临时子目录，不复制 raw、个人浏览器资料或旧生成包；源文件 SHA256 清单为 `source-manifest.json`，构建调用脚本为 `build-ui-scale.ps1`。
+
+**首次 Windows 构建被测试门禁停止**：46 项中 `test_local_only_and_no_arbitrary_files` 收到 `ConnectionAbortedError / WinError 10053`，1 项 raw 对照照常跳过，11.110 s；没有生成该次分发 ZIP。未查明这一连接中断的根因，不能归因于字号改动或宣称已修复；没有关闭安全软件、跳过该用例或放宽断言。**相同源码、环境及命令原样重跑**，46 项运行、45 项通过、1 项 raw 对照跳过，11.273 s，随后构建和 exe 自检通过。首次失败及重跑日志分别完整保留为 `windows-build.txt`、`windows-build-retry.txt`。PyInstaller 静态分析警告另存 `pyinstaller-warnings.txt`，不宣称所有可选依赖路径均被验证。
+
+新成品：**`processed/releases/windows-20260914-192646-371174/`**。
+- ZIP **28,533,939 字节（27.2 MiB）**；解压文件总大小 **64,258,961 字节（61.3 MiB）**。
+- SHA256 **`f9d03f50dbfba616118ecf9ede8053aa3965229b7f21432cd6fdc93a58abb404`**；ZIP 完整性及 Windows 交付副本哈希通过。冻结的四个网页资源与修改后源码逐字节相同。
+- Windows 11 x64 / Python 3.14.5 / NumPy 2.5.3 / Pillow 12.3.0 / PyInstaller 6.22.3；exe 离线自检 **PASS、frozen=true**。重新从 ZIP 解压至中文/空格目录，再以不含 Python 的 PATH 运行自检也 PASS；这不是在未安装 Python 的新机器测试。
+- **Edge 153.0.4234.32 与 Chrome 152.0.7977.84 成品检查均 PASS**：五组视口及上述可读性/同屏/DPR 检查，真实刷新、多标签、冻结 JS 保活、关闭最后一页退出和端口释放、无关标签继续存在。最后一页关闭至退出分别 **7.313 / 7.268 秒**。证据在 `processed/validation/ui-scale-v1/{edge,chrome}/`，包括每个视口的截图、尺寸报告、重定位自检和浏览器 stderr。
+- 成品旁保存 `self-test.json`、`build-report.json`、两份 `*-browser-report.json`、`build-dependencies.txt`、`source-manifest.json`。构建时浏览器状态仍保留为 NOT RUN，后续检查结果另列，不倒改原构建记录。
+- Windows 临时交付目录 **`%LOCALAPPDATA%\Temp\EELS-native-build-lty_k2hh\release-ui-scale`** 有相同 ZIP 和 **`新版界面预览.png`**。旧 `release`、旧项目成品与本轮失败目录原样保留，无原地覆盖、安装或部署。
+
+结束时查询仅限本轮私有路径，**0 个新字号测试 exe/浏览器进程残留**；没有结束用户自己的旧程序页或浏览器。测试 profile 与 Windows 临时构建材料保留，不进入便携 ZIP。既有/外部工作树改动（包括管理日志）未回退，本轮未写管理日志。
+
+剩余：用户应把新 ZIP **完整解压到新目录**，按需导出后关闭旧程序页，再打开新 exe；不要只替换 exe 而沿用旧 `_internal`。可用 Ctrl+0 恢复个人浏览器 100% 缩放后判断效果。本次自动测试依然只对 exe 子进程覆盖 BROWSER 捕获 URL，没有验证个人默认浏览器缩放/配置，也未改变它；真实桌面舒适性、下载交互、签名/安全软件信誉及前节其他目标机限制仍由用户验收。

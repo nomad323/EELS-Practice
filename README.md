@@ -1,8 +1,44 @@
 # EELS 像差调节练习器
 
-在 WSL2 中运行、用 Windows 本地浏览器练习一至五阶、共 20 项像差补偿。**离线合成模型，不连接仪器，不是已标定的真实色差/校正器模型。**
+用本地浏览器练习一至五阶、共 20 项像差补偿。保留原 WSL2 源码运行方式，新增 Windows 轻量便携版启动/构建入口。**离线合成模型，不连接仪器，不是已标定的真实色差/校正器模型。**
 
 ## 启动
+
+### Windows 便携版（已生成 Windows x64 成品）
+
+当前成品（修复大屏字体/控件偏小）：**`processed/releases/windows-20260914-192646-371174/EELS-Practice-windows-x64.zip`**。ZIP **27.2 MiB**，解压后 **61.3 MiB**。Windows 文件资源管理器可粘贴 `%LOCALAPPDATA%\Temp\EELS-native-build-lty_k2hh\release-ui-scale` 获取相同 ZIP 及新版界面预览；这是临时交付目录，请把成品保存到你自己的常用文件夹。旧版 `windows-20260914-180130-633479` 保留作回退，不覆盖。
+
+**解压整个 ZIP → 打开 `EELS-Practice` 文件夹 → 双击 `EELS-Practice.exe`**，程序会打开系统默认浏览器。使用端无需 Python、WSL 或 Node，不内置 Electron/Chromium；保留 `_internal` 文件夹，不能只复制 exe。升级时先按需导出并关闭旧程序页，再把新 ZIP 解压到新文件夹；旧目录不会自动更新。
+
+**大屏可读性**：字体、控件、间距及图谱刻度随可用网页空间一起放大。例如 1920×1080 CSS 视口主要字号 **19.2px**，不再固定为 12px；较小/较矮窗口保留紧凑布局，基础字号限于 12～20px。程序不修改系统 DPI 或浏览器缩放；如字体仍异常偏小，先按 **Ctrl+0** 恢复浏览器 100% 缩放。截图的物理像素尺寸不等于 CSS 视口，具体效果仍请在自己的显示设置下确认。
+
+已通过 Windows 11 x64 二进制自检及隔离的 Edge/Chrome 浏览器检查：渲染、刷新、多标签、冻结 JS 保活、最后一页关闭后退出及端口释放。本版实测退出分别为 **7.313 / 7.268 秒**；同时检查了实际成品的大屏字号、九项参数/图谱同屏及 DPR 1/1.5/2 下的 Canvas 清晰度。自动测试只对子进程覆盖 `BROWSER` 捕获启动 URL，不改个人默认浏览器/资料；**正常双击时的系统默认浏览器关联、SmartScreen/签名提示及用户鼠标/下载对话框仍请实际确认**。
+
+- 自动绑定 `127.0.0.1` 的空闲端口，不影响原有 8765 服务，不修改防火墙、注册表或系统服务。
+- 关闭最后一个该程序页面（或离开该页面）后，通常约 **5～10 秒**退出程序；不关闭其他浏览器页面。同一启动链接多开标签时，全部关闭才退出。重复双击 exe 是独立实例、各用独立端口。
+- 刷新有 **5 秒断线宽限**，正常刷新不会立即关掉服务，但会像原版一样重建练习会话；先按需导出。后台存活通过 HTTP 事件流检测，不依赖会被浏览器限速的 JS 定时心跳。
+- 浏览器崩溃/强制终止也会尝试自动退出；操作系统完全休眠或浏览器主动丢弃/断开标签时不承诺无条件保活或即时退出。连接中断未恢复时重新双击程序。不要收藏随机端口链接。
+- 默认浏览器打不开时退出并提示；启动 **90 秒**还没有页面连接时停止服务并提示。没有静默常驻、自动安装/更新或外部应用请求。
+
+另保留早期 **源码打包材料快照**（其“尚未生成 exe”说明仅表示当时状态）：`processed/releases/windows-build-kit-20260914/EELS-Practice-build-kit.zip`（54,767 字节；不是可直接运行的软件，不包含 exe）。材料包的 `README.txt` 给出构建步骤，不含 raw 原件或截图。
+
+**重新构建**：本次经用户明确批准，使用 Windows 已有 Python **3.14.5 x64**，仅在独立 venv 安装 NumPy **2.5.3**、Pillow **12.3.0**、PyInstaller **6.22.3** 等构建依赖；没有修改系统 Python。完整依赖版本在成品旁的 `build-dependencies.txt`。以下命令仅供重建，普通使用者无需执行；选新的环境目录，不覆盖已有环境：
+
+```powershell
+py -3.14 -m venv .venv-build-windows
+.\.venv-build-windows\Scripts\python.exe -m pip install -r requirements-build.txt
+.\.venv-build-windows\Scripts\python.exe tools\build_windows.py
+```
+
+脚本自身不会安装依赖，拒绝在 WSL/Linux 或非 Windows x64 环境构建。先运行测试，再用 PyInstaller `onedir + windowed` 打包，包含运行库、网页和第三方许可；不带 raw 原件、截图、开发环境或浏览器内核。运行生成的 exe 做离线 HTTP/NumPy/PNG/NPZ 自检，从另一含中文及空格的工作目录启动；自检通过才生成 ZIP。输出至新的 **`processed/releases/windows-时间戳/`**：
+
+- `EELS-Practice/`：完整便携文件夹，含 `EELS-Practice.exe`、`_internal/`、使用说明和许可。
+- `EELS-Practice-windows-x64.zip`：供使用端解压；`build-report.json` 记录实际 ZIP/解压体积、依赖版本和 SHA256。
+- `self-test.json`：打包二进制自检结果，**不等于 Windows 默认浏览器和关闭页面验收**。
+
+每次输出到新目录，不覆盖旧包；不签名、不创建安装器或开机自启。Windows 可能对未签名程序显示信誉警告，请核对来源/哈希，不要关闭安全软件来绕过。构建时的 `build-report.json` 保留当时浏览器尚未检查的状态，后续实际成品浏览器结果分别见 `edge-browser-report.json`、`chrome-browser-report.json`。本次字号修复、构建重试及剩余检查见 [大屏界面验证记录](docs/validation.md#大屏字体与控件偏小修复2026-09-14)。架构取舍见 [便携版决定](docs/decisions/0004-portable-browser-lifetime.md)。
+
+### 原有 WSL2 / 源码服务（保持手动启停）
 
 在项目根目录的 WSL 终端执行：
 
@@ -24,13 +60,13 @@ curl --noproxy '*' http://127.0.0.1:8765/api/meta
 
 若 WSL 内可用、Windows 不可用，请检查 WSL2 的 localhost 转发、浏览器代理及本机防火墙；不要直接改为 `0.0.0.0` 或开放外网端口。Windows→WSL2 的实际转发仍需在你的机器上验收。
 
-运行依赖是 Python ≥3.10、NumPy、Pillow（见 `requirements.txt`）。本次实际使用 Python 3.14.4 / NumPy 2.3.5 / Pillow 12.1.1，已有依赖，没有进行安装。浏览器界面使用原生 JS/Canvas，不需要 Node、npm、Matplotlib 或 Flask；Node 仅用于可选浏览器测试。
+源码运行依赖是 Python ≥3.10、NumPy、Pillow（见 `requirements.txt`）。原 WSL 环境使用 Python 3.14.4 / NumPy 2.3.5 / Pillow 12.1.1，未改动；Windows 便携成品的独立构建版本见上节。浏览器界面使用原生 JS/Canvas，不需要 Node、npm、Matplotlib 或 Flask；Node 仅用于可选浏览器测试。
 
-本次截图风格、显示顺序与键盘交互改动只更新前端：若服务已运行，先按需导出当前会话，再 **Ctrl+F5** 即可，无需重启后端。若页面提示“后端版本过旧”，才需自行 `Ctrl+C` 并重新执行 `python3 run.py`（保留自选 `--port`），然后强制刷新。刷新会重建浏览器会话。
+以下说明仅指此前截图风格、显示顺序与键盘交互改动（便携版请使用上面的新入口）：若服务已运行，先按需导出当前会话，再 **Ctrl+F5** 即可，无需重启后端。若页面提示“后端版本过旧”，才需自行 `Ctrl+C` 并重新执行 `python3 run.py`（保留自选 `--port`），然后强制刷新。刷新会重建浏览器会话。
 
 ## 使用
 
-- **原有深色配色 / 同屏分页**：按最新要求恢复原来的深色背景、浅色文字及灰色控件，不采用截图的粉底蓝字。保留参考截图的参数顺序、分组和行末双箭头；光斑与能谱仍保持黑底白信号。桌面左侧保留 **一～三阶（9 项）/ 四阶（5 项）/ 五阶（6 项）**，右侧同时显示光斑、能谱和峰宽。**翻页不清零、不关闭其他页系数、不重新模拟**，逐项步长及各页选择保留。页签圆点只表示非零当前系数，不提示隐藏答案；“全部归零”覆盖所有页。已检查 `1280×600` 至 `1920×1080` 桌面视口及 `1024×768、720×720、390×844` 窄屏，当前页所有参数与两幅图、FWHM 可同屏操作；窄屏为上图下控，图谱吸附，极小视口仍可能需要滚动，建议最大化浏览器。
+- **原有深色配色 / 同屏分页**：按最新要求恢复原来的深色背景、浅色文字及灰色控件，不采用截图的粉底蓝字。保留参考截图的参数顺序、分组和行末双箭头；光斑与能谱仍保持黑底白信号。桌面左侧保留 **一～三阶（9 项）/ 四阶（5 项）/ 五阶（6 项）**，右侧同时显示光斑、能谱和峰宽。**翻页不清零、不关闭其他页系数、不重新模拟**，逐项步长及各页选择保留。页签圆点只表示非零当前系数，不提示隐藏答案；“全部归零”覆盖所有页。已检查 `1280×600` 至 `3072×1728` 桌面视口及 `1024×768、720×720、390×844` 窄屏，当前页所有参数与两幅图、FWHM 可同屏操作；窄屏为上图下控，图谱吸附，极小视口仍可能需要滚动，建议最大化浏览器。
 - **自由探索**：默认显示原九项，可翻到四/五阶页；未调的高阶项为零。拖动滑块或输入数值，直接改变残余像差。拖动过程中持续更新光斑、能谱与峰宽，无需松手。可同时叠加，`↺` 单项归零，或全部归零。
 - **选择 / 滚轮微调**：正常模式下 **↑↓ 选择当前页参数**，不改变系数；页首/页尾停住，不跳到隐藏页。单击行或行末 `↔` 也只选择。**双击 `↔` 或按 Enter** 才开始调整；双击数值框不启用。选择行和活动行有不同高亮。
   - **调节中 ↑↓ 改步长**：↑ ×10、↓ ÷10，限制 `0.01～120`，按 `0.01` 精度取整；默认每项 `0.1 meV`，也可在开始前输入自定步长。步长按项跨页保留，Esc 不撤销步长，刷新恢复默认。改步长不改系数、不重新模拟；非法步长拒绝调节。
@@ -111,6 +147,8 @@ with np.load('eels-sample.npz', allow_pickle=False) as sample:
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 node --check src/eels_sim/web/app.js            # 可选，需要已有 Node
 node tests/browser_smoke.mjs /path/to/chrome   # 可选，需要 Node ≥22 和已有 Chromium
+node tests/desktop_browser_smoke.mjs /path/to/chrome  # Linux 离线便携生命周期检查
+python3 run_desktop.py --self-test /chosen/path/report.json  # 不打开浏览器；只保存离线自检报告
 ```
 
 浏览器测试只临时启动本地服务和浏览器，结束后停止；生成 `processed/validation/` 截图。可在 Chromium 路径后追加输出目录，例如 `processed/validation/orders-v1`，以保留旧验证图。测试包含截图项序/原有深色配色、上下键选择、双击双箭头/Enter 启用、调节中上下键改步长及左右键单步增减、限幅/非法步长/混合滚轮与按键、Enter/单击确认、Esc 快照撤销、翻页后的键盘焦点、连续拖动、慢响应下控件不回退、全页滚轮捕获、确认不穿透及撤销后旧帧不能覆盖结果。另检查多种视口中九项与图谱同屏、下方 D03 实际调节、窄屏画面保持可见，以及窗口缩放重绘不发起新模拟或改变数据。新增四/五阶跨页叠加、页间数值/步长保留、分页时的在途帧、最高 1～5 阶练习、14/20 项精确补偿，以及高阶页桌面/窄屏同屏操作检查。它使用临时浏览器配置目录，不复用你的浏览器资料，不下载依赖。
@@ -123,6 +161,8 @@ node tests/browser_smoke.mjs /path/to/chrome   # 可选，需要 Node ≥22 和�
 - `src/eels_sim/training.py`：题目、补偿、答案与残差。
 - `src/eels_sim/presentation.py`：黑白 PNG、无损 NPZ 导出。
 - `src/eels_sim/server.py`、`web/`：回环 HTTP 和浏览器界面。
+- `run_desktop.py`、`src/eels_sim/desktop.py`、`web/desktop.js`：自动浏览器启动与页面连接生命周期；原 `run.py` 不变。
+- `tools/build_windows.py`、`requirements-build.txt`、`tools/portable-readme.txt`：Windows 便携构建及随包说明；与运行依赖分开。
 - `src/eels_sim/legacy.py`：原默认算法回归路径。
 - `tests/`：数值、HTTP 与实际浏览器检查。
 - `processed/`：忽略入库的派生示例/验证图，与 `raw/` 原件分离。

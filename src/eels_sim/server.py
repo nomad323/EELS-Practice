@@ -17,6 +17,7 @@ from .training import GENERATOR_VERSION, Exercise, checked_controls, new_exercis
 WEB = Path(__file__).parent / "web"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/desktop.js": ("desktop.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8")}
 
 
@@ -191,9 +192,9 @@ class Handler(BaseHTTPRequestHandler):
 class LocalServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=8765):
+    def __init__(self, port=8765, *, handler_class=Handler):
         self.application = Application()
-        super().__init__(("127.0.0.1", port), Handler)
+        super().__init__(("127.0.0.1", port), handler_class)
 
 
 def main():

@@ -11,6 +11,33 @@ const tuneUpLabels = {D10: 'FX', D01: 'FY', D02: 'C', D20: 'D', D11: 'SY'};
 let lastFrame = null, lastImage = null, running = false, dirty = false, pendingAction = "update";
 let revision = 0, contextRevision = 0, timer = null, lockedVmax = null, failed = false;
 let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false, suppressDoubleClick = false;
+let practiceStartedAt = null, practiceElapsed = 0, practiceInterval = null;
+
+function renderPracticeTimer() {
+  // Measure elapsed time, not interval ticks: background throttling must not
+  // turn a delayed repaint into lost practice time.
+  const elapsed = practiceStartedAt === null ? practiceElapsed : performance.now() - practiceStartedAt;
+  const tenths = Math.floor(Math.max(0, elapsed) / 100);
+  const pad = value => String(value).padStart(2, "0");
+  $("practice-time").textContent = `${pad(Math.floor(tenths / 36000))}:${pad(Math.floor(tenths / 600) % 60)}:${pad(Math.floor(tenths / 10) % 60)}.${tenths % 10}`;
+}
+function resetPracticeTimer() {
+  clearInterval(practiceInterval); practiceInterval = null;
+  practiceStartedAt = null; practiceElapsed = 0;
+  renderPracticeTimer(); buttonState();
+}
+function startPracticeTimer() {
+  if ($("mode").value !== "practice" || practiceStartedAt !== null || $("timer-start").disabled) return;
+  practiceElapsed = 0; practiceStartedAt = performance.now();
+  practiceInterval = setInterval(renderPracticeTimer, 100);
+  renderPracticeTimer(); buttonState();
+}
+function stopPracticeTimer() {
+  if (practiceStartedAt === null) return;
+  practiceElapsed = performance.now() - practiceStartedAt; practiceStartedAt = null;
+  clearInterval(practiceInterval); practiceInterval = null;
+  renderPracticeTimer(); buttonState();
+}
 
 async function post(path, data, binary = false) {
   const response = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
@@ -100,7 +127,7 @@ function updateTermChoices() {
   $("term-count").value = String(choices.includes(previous) ? previous : total);
 }
 function newQuestion() {
-  finishWheel(); activeOrder = number("max-order"); updatePages(); zeroControls(); request("new");
+  finishWheel(); activeOrder = number("max-order"); resetPracticeTimer(); updatePages(); zeroControls(); request("new");
 }
 function zeroControls() { controls = Object.fromEntries(names.map(n => [n, 0])); syncControls(); }
 function updateWheelBanner() {
@@ -194,7 +221,7 @@ function buildControls() {
     });
     const stepLabel = document.createElement("label"); stepLabel.htmlFor = `wheel-step-${name}`; stepLabel.textContent = "步长";
     const step = document.createElement("input"); step.type = "number"; step.id = `wheel-step-${name}`;
-    step.min = "0.01"; step.max = String(meta.control_limit); step.step = "0.01"; step.value = "0.1";
+    step.min = "0.01"; step.max = String(meta.control_limit); step.step = "0.01"; step.value = "1";
     step.setAttribute("aria-label", `${name} 滚轮步长 / meV`); stepLabel.append(step);
     const note = document.createElement("span"); note.id = `wheel-note-${name}`; note.className = "wheel-note"; note.setAttribute("aria-live", "polite");
     step.setAttribute("aria-describedby", note.id);
@@ -221,6 +248,8 @@ function request(action = "update") {
   pump();
 }
 function buttonState() {
+  $("timer-start").disabled = $("mode").value !== "practice" || practiceStartedAt !== null || running || dirty || failed || !lastFrame?.question;
+  $("timer-stop").disabled = practiceStartedAt === null;
   ["new-question", "random-question", "retry", "reveal"].forEach(id => $(id).disabled = running);
   ["export", "save-png"].forEach(id => $(id).disabled = running || dirty || failed || !lastFrame);
 }
@@ -266,27 +295,31 @@ function redrawPlots() {
 }
 function setupCanvas(canvas) {
   const w = Math.max(1, canvas.clientWidth), h = Math.max(1, canvas.clientHeight);
-  const ratio = window.devicePixelRatio || 1, compact = w < 260;
+  // CSS rem sizing also applies to plot text/margins, independently of DPR.
+  // Only redraw the existing frame: no resampling or simulation changes.
+  const scale = parseFloat(getComputedStyle(document.documentElement).fontSize) / 12;
+  const ratio = window.devicePixelRatio || 1, compact = w < 260 * scale;
   canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio);
   const c = canvas.getContext("2d"); c.setTransform(ratio, 0, 0, ratio, 0, 0);
-  c.fillStyle = "#000"; c.fillRect(0, 0, w, h); c.font = `${compact ? 9 : 12}px system-ui`;
-  return {c, w, h, compact, l: compact ? 46 : 58, r: w - 12, t: 14, b: h - (compact ? 34 : 42)};
+  c.fillStyle = "#000"; c.fillRect(0, 0, w, h); c.font = `${(compact ? 9 : 12) * scale}px system-ui`;
+  return {c, w, h, compact, scale, l: (compact ? 46 : 58) * scale,
+    r: w - 12 * scale, t: 14 * scale, b: h - (compact ? 34 : 42) * scale};
 }
 function axis(p, xmin, xmax, ymin, ymax, ylabel, decimals = 0) {
-  const {c, l, r, t, b} = p;
+  const {c, l, r, t, b, scale} = p;
   c.strokeStyle = "#89919b"; c.lineWidth = 1; c.beginPath(); c.moveTo(l, t); c.lineTo(l, b); c.lineTo(r, b); c.stroke();
   c.fillStyle = "#cbd1d8"; c.textAlign = "center";
   for (let i = 0; i <= 4; i++) {
     const x = l + i * (r-l)/4;
-    c.fillText((xmin+i*(xmax-xmin)/4).toFixed(0), x, b+(p.compact ? 13 : 17));
+    c.fillText((xmin+i*(xmax-xmin)/4).toFixed(0), x, b+(p.compact ? 13 : 17)*scale);
   }
-  c.fillText("E / meV", (l+r)/2, b+(p.compact ? 28 : 35));
+  c.fillText("E / meV", (l+r)/2, b+(p.compact ? 28 : 35)*scale);
   c.textAlign = "right";
   for (let i = 0; i <= 4; i++) {
     const value = ymin+i*(ymax-ymin)/4;
-    c.fillText(Math.abs(value) >= 10000 ? value.toExponential(1).replace("e+", "e") : value.toFixed(decimals), l-6, b-i*(b-t)/4+4);
+    c.fillText(Math.abs(value) >= 10000 ? value.toExponential(1).replace("e+", "e") : value.toFixed(decimals), l-6*scale, b-i*(b-t)/4+4*scale);
   }
-  c.save(); c.translate(p.compact ? 10 : 14, (t+b)/2); c.rotate(-Math.PI/2); c.textAlign = "center"; c.fillText(ylabel, 0, 0); c.restore();
+  c.save(); c.translate((p.compact ? 10 : 14)*scale, (t+b)/2); c.rotate(-Math.PI/2); c.textAlign = "center"; c.fillText(ylabel, 0, 0); c.restore();
 }
 function drawSpot(frame, image) {
   const p = setupCanvas($("spot")), {c, l, r, t, b} = p;
@@ -403,8 +436,10 @@ function bind() {
   window.addEventListener("blur", () => finishWheel());
   [3, 4, 5].forEach(page => $(`page-${page}`).addEventListener("click", () => setPage(page)));
   $("max-order").addEventListener("change", () => { finishWheel(); updateTermChoices(); });
+  $("timer-start").addEventListener("click", startPracticeTimer);
+  $("timer-stop").addEventListener("click", stopPracticeTimer);
   $("mode").addEventListener("change", () => {
-    finishWheel();
+    finishWheel(); resetPracticeTimer();
     const practice = $("mode").value === "practice";
     $("practice").hidden = !practice; $("reveal").hidden = !practice; $("feedback").hidden = true;
     $("mode-help").textContent = practice ? "滑块是补偿量 c；隐藏像差 a 与它相加。重试只清零补偿，不换题。最高阶设置在重新出题后生效。" : "一至五阶共 20 项，跨页任意叠加。系数单位：meV / 归一化角度幂。";
@@ -414,7 +449,7 @@ function bind() {
   $("zero").addEventListener("click", () => { zeroControls(); request(); });
   $("new-question").addEventListener("click", newQuestion);
   $("random-question").addEventListener("click", () => { $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; newQuestion(); });
-  $("retry").addEventListener("click", () => { zeroControls(); request("retry"); });
+  $("retry").addEventListener("click", () => { resetPracticeTimer(); zeroControls(); request("retry"); });
   $("reveal").addEventListener("click", () => request(lastFrame?.feedback ? "hide" : "reveal"));
   ["pupil-x", "pupil-y", "angular-slit", "y-psf", "extra-sigma", "counts", "background", "noise-seed", "poisson", "field", "quality"].forEach(id => $(id).addEventListener("change", () => request()));
   $("gamma").addEventListener("input", () => { $("gamma-value").textContent = Number($("gamma").value).toFixed(2); schedule(); });

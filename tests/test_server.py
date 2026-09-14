@@ -161,7 +161,7 @@ class HTTPTests(unittest.TestCase):
         return urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30)
 
     def test_static_meta_and_http_frame(self):
-        for path in ('/', '/app.js', '/style.css'):
+        for path in ('/', '/app.js', '/desktop.js', '/style.css'):
             with self.request(path) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn("connect-src 'self'", response.headers['Content-Security-Policy'])
@@ -195,6 +195,7 @@ class HTTPTests(unittest.TestCase):
         for path, data, headers, status in (
             ('/raw/20260912/xiangcha.py', None, {}, 404),
             ('/../AGENTS.md', None, {}, 404),
+            ('/api/desktop/events?token=wrong', None, {}, 404),
             ('/api/session', {}, {'Origin': 'https://example.invalid'}, 403),
             ('/api/session', {}, {'Content-Type': 'text/plain'}, 415),
             ('/api/meta', None, {'Host': 'attacker.invalid'}, 403),
