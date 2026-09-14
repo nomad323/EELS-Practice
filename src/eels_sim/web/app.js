@@ -2,10 +2,15 @@
 const $ = id => document.getElementById(id);
 let names = [], monomials = [], orders = {};
 let meta, session, controls = {};
-let currentPage = 3, activeOrder = 5;
+let currentPage = 3, activeOrder = 5, selectedTerm = null;
+const pageSelection = {};
+// The TuneUp reference takes precedence where the two screenshots disagree.
+// Presentation order only: preserve the model/export basis and seeded exercises.
+const tuneUpOrder = ['D10', 'D01', 'D02', 'D20', 'D11'];
+const tuneUpLabels = {D10: 'FX', D01: 'FY', D02: 'C', D20: 'D', D11: 'SY'};
 let lastFrame = null, lastImage = null, running = false, dirty = false, pendingAction = "update";
 let revision = 0, contextRevision = 0, timer = null, lockedVmax = null, failed = false;
-let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false;
+let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false, suppressDoubleClick = false;
 
 async function post(path, data, binary = false) {
   const response = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
@@ -57,13 +62,35 @@ function updatePages() {
     $(`page-${page}`).setAttribute("aria-pressed", String(page === currentPage));
   });
   $("page-3").textContent = activeOrder === 1 ? "一阶" : activeOrder === 2 ? "一～二阶" : "一～三阶";
+  selectTerm(visible.includes(pageSelection[currentPage]) ? pageSelection[currentPage] : visible[0]);
   updatePageBadges();
+}
+function selectTerm(name, focus = false) {
+  if (!pageTerms(currentPage).includes(name) || (wheelTarget && wheelTarget !== name)) return;
+  selectedTerm = name; pageSelection[currentPage] = name;
+  names.forEach(n => {
+    const row = $(`row-${n}`);
+    row.classList.toggle('selected', n === name);
+    row.tabIndex = n === name ? 0 : -1;
+    if (n === name) row.setAttribute('aria-current', 'true'); else row.removeAttribute('aria-current');
+  });
+  if (focus) {
+    const row = $(`row-${name}`);
+    row.focus({preventScroll: true});
+    // On small windows keep the selected row below the pinned plots.
+    const top = matchMedia('(max-width:1100px)').matches
+      ? document.querySelector('.monitor').getBoundingClientRect().bottom
+      : document.querySelector('header').getBoundingClientRect().bottom;
+    const box = row.getBoundingClientRect();
+    if (box.top < top || box.bottom > innerHeight) row.scrollIntoView({block: 'end'});
+  }
 }
 function setPage(page) {
   if (!pageTerms(page).length) return;
   finishWheel(); currentPage = page; updatePages();
   // Paging is display-only, even if a simulation is still in flight.
   if (matchMedia("(max-width:1100px)").matches) document.querySelector(".workbench").scrollIntoView({block: "start"});
+  selectTerm(selectedTerm, true);
 }
 function updateTermChoices() {
   const order = number("max-order"), total = order*(order+3)/2;
@@ -78,7 +105,7 @@ function newQuestion() {
 function zeroControls() { controls = Object.fromEntries(names.map(n => [n, 0])); syncControls(); }
 function updateWheelBanner() {
   $("wheel-session").hidden = wheelTarget === null;
-  if (wheelTarget) $("wheel-session").textContent = `${wheelTarget} = ${controls[wheelTarget].toFixed(2)} · 全页滚轮调节 · 左键保留并停止 · Esc 撤销本次调整`;
+  if (wheelTarget) $("wheel-session").textContent = `${wheelTarget} = ${controls[wheelTarget].toFixed(2)} · 步长 ${$(`wheel-step-${wheelTarget}`).value} · ↑↓ 步长 · ←→ 单步 · Enter / 单击确认 · Esc 撤销`;
 }
 function updateWheelUI() {
   names.forEach(term => {
@@ -89,12 +116,12 @@ function updateWheelUI() {
   updateWheelBanner();
 }
 function startWheel(name) {
-  if (wheelTarget || $(`row-${name}`).hidden || !wheelNote(name)) return;
+  if (!name || wheelTarget || !pageTerms(currentPage).includes(name) || !wheelNote(name)) return;
+  selectTerm(name, true);
   wheelTarget = name;
   // Snapshot the current controls, not a possibly older rendered frame. A wheel
   // session changes only one coefficient; Escape restores this transaction.
   wheelStartControls = {...controls};
-  document.activeElement?.blur();
   updateWheelUI();
 }
 function finishWheel(rollback = false) {
@@ -110,17 +137,41 @@ function finishWheel(rollback = false) {
 function wheelNote(name) {
   const step = $(`wheel-step-${name}`);
   const valid = step.value !== "" && step.checkValidity();
-  const text = valid ? "先设置步长，再点击滚轮调节。启用后全页滚轮只调此项；左键保留并停止，Esc 撤销。" : "步长须为 0.01～120 的数值，精度 0.01；当前不执行滚轮调节。";
+  const text = valid ? "双击双箭头或 Enter 开始；滚轮或 ←/→ 调系数（左减、右增一步），↑ 步长 ×10，↓ 步长 ÷10；Enter / 单击确认，Esc 撤销。" : "步长须为 0.01～120 的数值，精度 0.01；当前不执行滚轮调节。";
   $(`wheel-note-${name}`).textContent = valid && wheelTarget !== name ? "" : text;
-  $(`wheel-toggle-${name}`).textContent = valid ? (wheelTarget === name ? "调节中" : "滚轮调节") : "步长无效";
+  $(`wheel-toggle-${name}`).title = text;
   step.title = text;
   return valid;
+}
+function adjustWheelStep(direction) {
+  const step = $(`wheel-step-${wheelTarget}`);
+  // Integer hundredths avoid floating point drift; an invalid editor remains
+  // invalid until explicitly corrected, rather than silently changing its value.
+  if (!wheelNote(wheelTarget)) return;
+  const units = Math.round(Number(step.value)*100);
+  step.value = String(Math.max(1, Math.min(meta.control_limit*100,
+    direction > 0 ? units*10 : Math.round(units/10)))/100);
+  wheelNote(wheelTarget); updateWheelBanner();
+}
+function nudgeCoefficient(direction) {
+  // Wheel and keyboard share the same step validation, rounding, bounds and
+  // transaction/pipeline. Only the currently active coefficient can change.
+  if (!wheelTarget || !wheelNote(wheelTarget)) return;
+  const name = wheelTarget, step = Number($(`wheel-step-${name}`).value);
+  const units = Math.round(controls[name]*100) + direction*Math.round(step*100);
+  const next = Math.max(-meta.control_limit*100, Math.min(meta.control_limit*100, units))/100;
+  if (next === controls[name]) return;
+  controls[name] = next; syncControls(); updateWheelBanner(); schedule();
 }
 function buildControls() {
   names.forEach((name, i) => {
     const row = document.createElement("div"); row.className = "coefficient"; row.id = `row-${name}`;
-    row.title = "点击本行的滚轮调节按钮启用；左键保留并停止，Esc 撤销本次调整";
-    const label = document.createElement("label"); label.htmlFor = `slide-${name}`; label.append(name);
+    row.title = "↑↓ 选择参数；双击双箭头或 Enter 开始滚轮调节";
+    row.setAttribute('role', 'group'); row.setAttribute('aria-label', `${name} · ${monomials[i]}`);
+    row.addEventListener('pointerdown', () => selectTerm(name));
+    row.addEventListener('focusin', () => selectTerm(name));
+    const label = document.createElement("label"); label.htmlFor = `slide-${name}`;
+    label.append(tuneUpLabels[name] ? `${tuneUpLabels[name]} (${name})` : name);
     const small = document.createElement("small"); small.textContent = monomials[i]; label.append(small);
     const slider = document.createElement("input"); slider.type = "range"; slider.id = `slide-${name}`;
     const input = document.createElement("input"); input.type = "number"; input.id = `value-${name}`; input.setAttribute("aria-label", `${name} 数值`);
@@ -134,16 +185,21 @@ function buildControls() {
     // Keep step editors and activation buttons in stable positions.
     const settings = document.createElement("div"); settings.className = "wheel-settings"; settings.id = `wheel-settings-${name}`;
     const toggle = document.createElement("button"); toggle.id = `wheel-toggle-${name}`; toggle.className = "wheel-toggle";
-    toggle.textContent = "滚轮调节"; toggle.setAttribute("aria-label", `启用 ${name} 滚轮调节`); toggle.setAttribute("aria-pressed", "false");
-    toggle.addEventListener("click", () => startWheel(name));
+    toggle.textContent = "↔"; toggle.setAttribute("aria-label", `双击或 Enter 启用 ${name} 滚轮调节`); toggle.setAttribute("aria-pressed", "false");
+    toggle.addEventListener('click', () => selectTerm(name));
+    toggle.addEventListener('dblclick', event => {
+      event.preventDefault();
+      if (!suppressDoubleClick) startWheel(name);
+      suppressDoubleClick = false;
+    });
     const stepLabel = document.createElement("label"); stepLabel.htmlFor = `wheel-step-${name}`; stepLabel.textContent = "步长";
     const step = document.createElement("input"); step.type = "number"; step.id = `wheel-step-${name}`;
     step.min = "0.01"; step.max = String(meta.control_limit); step.step = "0.01"; step.value = "0.1";
     step.setAttribute("aria-label", `${name} 滚轮步长 / meV`); stepLabel.append(step);
     const note = document.createElement("span"); note.id = `wheel-note-${name}`; note.className = "wheel-note"; note.setAttribute("aria-live", "polite");
     step.setAttribute("aria-describedby", note.id);
-    step.addEventListener("input", () => wheelNote(name));
-    settings.append(toggle, stepLabel, note);
+    step.addEventListener("input", () => { wheelNote(name); updateWheelBanner(); });
+    settings.append(stepLabel, toggle, note);
     row.append(label, slider, input, reset, settings); $("sliders").append(row);
   });
   updatePages();
@@ -275,7 +331,7 @@ function render(frame, image) {
   }
   if (frame.feedback) {
     $("score").textContent = `本题 ${frame.feedback.eligible_terms.length} 个可调项，按 ±${meta.control_limit} meV 量程归一化的残差 RMS：${(frame.feedback.normalized_rms*100).toFixed(3)}%`;
-    $("answer-rows").replaceChildren(...frame.feedback.eligible_terms.map(name => {
+    $("answer-rows").replaceChildren(...names.filter(name => frame.feedback.eligible_terms.includes(name)).map(name => {
       const row = document.createElement("tr");
       [name, ...["initial", "controls", "answer", "residual"].map(k => fmt(frame.feedback[k][name], 4))].forEach(value => {
         const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
@@ -296,20 +352,43 @@ function bind() {
     // Capture everywhere, including plots, other coefficients and step editors.
     // No page/native-input scrolling or zoom can leak through while tuning.
     swallow(event);
-    if (event.ctrlKey || event.metaKey || event.deltaY === 0 || !wheelNote(wheelTarget)) return;
-    const name = wheelTarget, step = Number($(`wheel-step-${name}`).value);
-    const units = Math.round(controls[name]*100) - Math.sign(event.deltaY)*Math.round(step*100);
-    const next = Math.max(-meta.control_limit*100, Math.min(meta.control_limit*100, units))/100;
-    if (next === controls[name]) return;
-    controls[name] = next; syncControls(); updateWheelBanner(); schedule();
+    if (event.ctrlKey || event.metaKey || event.deltaY === 0) return;
+    nudgeCoefficient(-Math.sign(event.deltaY));
   }, {capture: true, passive: false});
   document.addEventListener("keydown", event => {
-    if (wheelTarget && event.key === "Escape") { swallow(event); finishWheel(true); }
+    if (event.isComposing) return;
+    if (wheelTarget) {
+      if (['Escape', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(event.key)) {
+        swallow(event);
+        if (event.key === 'Escape') finishWheel(true);
+        else if (event.key === 'Enter' && !event.repeat) finishWheel();
+        else if (event.key === 'ArrowUp') adjustWheelStep(1);
+        else if (event.key === 'ArrowDown') adjustWheelStep(-1);
+        else if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') &&
+                 !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+          nudgeCoefficient(event.key === 'ArrowRight' ? 1 : -1);
+        }
+      } else if (event.target.matches?.('input,select')) swallow(event);
+      return;
+    }
+    // Keep scene editors, selects and ordinary action buttons' native keys.
+    // Within the coefficient panel, arrows select instead of spinning values.
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const row = event.target.closest?.('.coefficient');
+    if (!row && event.target.closest?.('input,select,[contenteditable]')) return;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      swallow(event);
+      const visible = pageTerms(currentPage), index = visible.indexOf(selectedTerm);
+      selectTerm(visible[Math.max(0, Math.min(visible.length-1, index + (event.key === 'ArrowUp' ? -1 : 1)))], true);
+    } else if (event.key === 'Enter' && !event.target.closest?.('button:not(.wheel-toggle),summary,a')) {
+      swallow(event);
+      if (!event.repeat) startWheel(selectedTerm);
+    }
   }, true);
   document.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
     consumeLeftClick = Boolean(wheelTarget);
-    if (consumeLeftClick) { swallow(event); finishWheel(); }
+    if (consumeLeftClick) { suppressDoubleClick = true; swallow(event); finishWheel(); }
   }, true);
   document.addEventListener("pointerup", event => {
     if (consumeLeftClick && event.button === 0) swallow(event);
@@ -318,8 +397,8 @@ function bind() {
     if (event.button === 0 && (consumeLeftClick || wheelTarget)) {
       // The stopping click only confirms; it must not also reset a coefficient,
       // activate another button or immediately re-enter the same wheel session.
-      swallow(event); consumeLeftClick = false; finishWheel();
-    }
+      swallow(event); consumeLeftClick = false; suppressDoubleClick = true; finishWheel();
+    } else if (event.detail < 2) suppressDoubleClick = false;
   }, true);
   window.addEventListener("blur", () => finishWheel());
   [3, 4, 5].forEach(page => $(`page-${page}`).addEventListener("click", () => setPage(page)));
@@ -358,10 +437,14 @@ async function init() {
     const response = await fetch("/api/meta"); if (!response.ok) throw new Error("无法加载本地模型配置");
     meta = await response.json();
     if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20 || meta.generator_version !== "eels-exercise-per-term-1") throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
-    names = meta.terms;
+    names = [...tuneUpOrder, ...meta.terms.filter(n => !tuneUpOrder.includes(n))];
+    const powers = Object.fromEntries(meta.terms.map((n, i) => [n, meta.powers[i]]));
     const superscript = ["", "", "²", "³", "⁴", "⁵"];
-    monomials = meta.powers.map(([i,j]) => (i ? "u"+superscript[i] : "") + (j ? "v"+superscript[j] : ""));
-    orders = Object.fromEntries(names.map((n,i) => [n, meta.powers[i][0]+meta.powers[i][1]]));
+    monomials = names.map(n => {
+      const [i, j] = powers[n];
+      return (i ? "u"+superscript[i] : "") + (j ? "v"+superscript[j] : "");
+    });
+    orders = Object.fromEntries(names.map(n => [n, powers[n][0]+powers[n][1]]));
     controls = Object.fromEntries(names.map(n => [n, 0]));
     activeOrder = meta.max_order; $("max-order").value = String(meta.default_practice_order); updateTermChoices();
     session = (await post("/api/session", {})).session;

@@ -6,7 +6,7 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-<header><div><span class="eyebrow">OFFLINE · EELS LAB</span><h1>像差调节练习器</h1></div><div class="badge">合成模型 · 无仪器连接</div></header>
+<header><div><h1>EELS · 像差调节练习器</h1></div><div class="badge">Offline · 合成模型 · 无仪器连接</div></header>
 <p id="wheel-session" class="wheel-session" role="status" hidden></p>
 <main>
   <section class="panel session-panel" aria-label="模式与练习设置">
@@ -24,8 +24,8 @@
   </section>
   <div class="workbench">
     <section class="panel tuning" aria-label="一至五阶系数分页调节">
-      <div class="section-head"><h2>系数</h2><nav class="coefficient-pages" aria-label="参数分页"><button id="page-3" aria-controls="sliders" aria-pressed="true">一～三阶</button><button id="page-4" aria-controls="sliders" aria-pressed="false">四阶</button><button id="page-5" aria-controls="sliders" aria-pressed="false">五阶</button></nav></div>
-      <p class="tuning-help hint">翻页保留叠加 · meV · 滚轮：左键保留停止 / Esc 撤销</p>
+      <div class="section-head"><h2>TuneUp · 系数</h2><nav class="coefficient-pages" aria-label="参数分页"><button id="page-3" aria-controls="sliders" aria-pressed="true">一～三阶</button><button id="page-4" aria-controls="sliders" aria-pressed="false">四阶</button><button id="page-5" aria-controls="sliders" aria-pressed="false">五阶</button></nav></div>
+      <p class="tuning-help hint">↑↓ 选择 · 双击 ↔ / Enter 调节 · meV<br>调节中：↑↓ 步长 · ←→ 单步 · Enter / 单击确认 · Esc 撤销</p>
       <div id="sliders"></div>
       <div class="buttons"><button id="zero" title="清零所有参数页的系数，不只当前页">全部归零</button><button id="reveal" hidden>查看答案 / 差距</button></div>
     </section>
@@ -75,7 +75,7 @@
       </details>
       <details class="panel"><summary>模型说明与练习方法</summary>
         <p id="mode-help" class="hint">一至五阶共 20 项，分三页调节。翻页不清零、不关闭其他页的系数，所有已调项共同叠加；页签圆点表示该页存在非零系数。系数单位：meV / 归一化角度幂。</p>
-        <p>先设置步长，再点击该行“滚轮调节”：鼠标在页面任意位置滚动都只调这一项，不翻动网页。左键保留并停止；Esc 撤销本次调整。Dij 对应 uⁱvʲ，无阶乘。量程 ±120 是练习范围，不是设备控制限值。</p>
+        <p>正常模式下 ↑↓ 选择当前页参数（不改数值），单击行或双箭头也可选择；双击行末 ↔ 或按 Enter 开始滚轮调节。调节中，全页滚轮或键盘 ←/→ 只改选中系数：← 减少当前步长，→ 增加当前步长，每次按键一步（长按按系统重复事件逐步调整），范围仍为 ±120 meV。↑ 将步长 ×10，↓ 将步长 ÷10（0.01～120，精度 0.01）。←/→ 不切换参数、不结束会话；带 Ctrl/Meta/Alt/Shift 的左右键不调系数。Enter 或左键单击确认并停止，Esc 恢复本次开始时的系数与图谱。确认用的点击不会触发其他按钮。步长按项保留，不随 Esc 撤销。场景/出题设置保留原生键盘操作。</p><p>显示顺序参考 raw/20260914 的两张截图；低阶冲突处以粉色 TuneUp 图为准：FX (D10)、FY (D01)、C (D02)、D (D20)、SY (D11)。三阶及高阶沿另一张表的幂次顺序；答案表同序。仅借用标签与样式，不新增 Drift Tube、Loss Prism、ZLP tare、AC 或六阶仪器功能。Dij 对应 uⁱvʲ，无阶乘；单位仍为 meV，不是截图的 V / µV。量程 ±120 是练习范围，不是设备控制限值。</p>
         <p>自由模式从零开始，先单独观察 D01 的倾斜、D02 的弯曲，再叠加其他项。练习模式隐藏初始像差，滑块是你施加的补偿量，目标是让残余接近零。可选择最高一至五阶，再选择隐藏项数；候选项覆盖一阶至所选最高阶，不保证每题都抽中最高阶。点击出题后设置生效；重试保留原题的阶数。</p><p>难度控制每个选中项的绝对系数：初级 7–20、中级 15.75–45、高级 31.5–90，正负随机。选满 20 项也不分摊总偏移预算；这是系数幅度，不保证各项视觉效果相同或总峰宽单调。强像差可能超出视野，可在“场景与采样”扩大能量视野至 ±240 / ±480 meV，不会改变本题答案。</p><p>无像差时是具有有限能量厚度的竖直带，而不是二维点。8 meV 是有效总能量响应（高斯 σ≈3.397 meV），不是色差系数 Cc。源、真实能角色差耦合、衍射和设备控制尚未标定；不能用本模型直接诊断仪器。</p><p>只追求最小 FWHM 可能遗漏长尾或多峰；同时观察形状、RMS 宽度和按需揭示的系数残差。自动亮度适合看形状，锁定亮度才适合比较峰值强弱。</p><p id="version"></p>
       </details>
     </div>

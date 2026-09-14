@@ -80,6 +80,7 @@ async function doubleClick(id) {
     await command('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount});
     await command('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount});
   }
+  await idle();
 }
 async function pointerClick(id) {
   const {x, y} = await centre(id);
@@ -87,11 +88,12 @@ async function pointerClick(id) {
   await command('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
   await idle();
 }
-async function escape() {
-  await command('Input.dispatchKeyEvent', {type: 'keyDown', key: 'Escape', code: 'Escape'});
-  await command('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Escape', code: 'Escape'});
+async function key(key, extra = {}) {
+  await command('Input.dispatchKeyEvent', {type: 'keyDown', key, code: key, ...extra});
+  await command('Input.dispatchKeyEvent', {type: 'keyUp', key, code: key});
   await idle();
 }
+async function escape() { await key('Escape'); }
 async function wheelAt(id, deltaY) {
   const point = await centre(id);
   await command('Input.dispatchMouseEvent', {type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY});
@@ -178,7 +180,132 @@ try {
   assert.ok(Math.abs(Number(await evaluate(`document.getElementById('value-D10').value`))) > 20, 'actual pointer drag changes slider');
   await evaluate('window.fetch = window.__originalFetch');
   await click('zero');
-  // Explicit activation starts a transaction: global wheel capture, left-click
+  // Screenshot order is presentation-only; powers and canonical export metadata
+  // still agree by coefficient name, and the complete set of 20 is preserved.
+  const displayOrder = ['D10','D01','D02','D20','D11','D30','D21','D12','D03',
+    'D40','D31','D22','D13','D04','D50','D41','D32','D23','D14','D05'];
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.coefficient'), el => el.id.slice(4))`), displayOrder);
+  assert.deepEqual(await evaluate('names'), displayOrder);
+  assert.deepEqual(await evaluate(`['D02','D20','D11'].map(n => document.querySelector('#row-'+n+' small').textContent)`), ['v²','u²','uv']);
+  assert.deepEqual(await evaluate(`(() => {
+    const style = id => getComputedStyle(document.getElementById(id));
+    return {panel: getComputedStyle(document.querySelector('.tuning')).backgroundColor,
+      scheme: getComputedStyle(document.documentElement).colorScheme,
+      background: getComputedStyle(document.documentElement).backgroundColor,
+      input: style('value-D10').backgroundColor, text: style('value-D10').color,
+      warning: style('warnings').color, error: style('error').color,
+      arrow: document.getElementById('wheel-toggle-D10').textContent,
+      panels: Array.from(document.querySelectorAll('.panel')).every(p => getComputedStyle(p).backgroundColor==='rgb(25, 28, 32)')};
+  })()`), {panel:'rgb(25, 28, 32)', scheme:'dark', background:'rgb(16, 18, 20)',
+    input:'rgb(16, 18, 21)', text:'rgb(240, 241, 243)', warning:'rgb(244, 196, 126)',
+    error:'rgb(255, 172, 165)', arrow:'↔', panels:true});
+  // Real keyboard input: selection never modifies values, including when a
+  // native coefficient number/range/step editor previously had focus.
+  await pointerClick('wheel-toggle-D10');
+  const selectionBefore = await evaluate('JSON.stringify(controls)');
+  const selectionRequests = requests.filter(url => url.endsWith('/api/frame')).length;
+  await key('ArrowUp'); assert.equal(await evaluate('selectedTerm'), 'D10');
+  for (const name of displayOrder.slice(1, 9)) {
+    await key('ArrowDown'); assert.equal(await evaluate('selectedTerm'), name);
+  }
+  await key('ArrowDown'); assert.equal(await evaluate('selectedTerm'), 'D03', 'page boundary does not jump to hidden high orders');
+  await key('ArrowUp'); assert.equal(await evaluate('selectedTerm'), 'D12');
+  for (const id of ['value-D01','slide-D01','wheel-step-D01']) {
+    await evaluate(`document.getElementById('${id}').focus()`);
+    await key('ArrowDown'); assert.equal(await evaluate('selectedTerm'), 'D02');
+  }
+  assert.equal(await evaluate('JSON.stringify(controls)'), selectionBefore);
+  assert.equal(requests.filter(url => url.endsWith('/api/frame')).length, selectionRequests, 'selection is display-only');
+  await key('Enter'); assert.equal(await evaluate('wheelTarget'), 'D02');
+  await key('Enter', {autoRepeat:true}); assert.equal(await evaluate('wheelTarget'), 'D02', 'held Enter cannot immediately confirm');
+  const stepRequests = requests.filter(url => url.endsWith('/api/frame')).length;
+  await key('ArrowUp');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '1');
+  await key('ArrowDown');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '0.1');
+  for (let i=0;i<5;i++) await key('ArrowDown');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '0.01');
+  for (let i=0;i<7;i++) await key('ArrowUp');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '120');
+  assert.equal(await evaluate('selectedTerm'), 'D02', 'step keys never switch the active parameter');
+  assert.equal(await evaluate('JSON.stringify(controls)'), selectionBefore);
+  assert.equal(requests.filter(url => url.endsWith('/api/frame')).length, stepRequests, 'step keys do not simulate');
+  await wheelAt('spot', -120); assert.equal(await evaluate('controls.D02'), 120);
+  await key('Enter'); assert.equal(await evaluate('wheelTarget'), null);
+  await key('Enter', {autoRepeat:true}); assert.equal(await evaluate('wheelTarget'), null, 'held confirmation cannot restart');
+  await escape(); assert.equal(await evaluate('controls.D02'), 120, 'Enter commits');
+  await key('Enter'); await wheelAt('spot', 120); await escape();
+  assert.equal(await evaluate('controls.D02'), 120, 'Escape restores keyboard-start snapshot');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '120', 'Escape does not undo step settings');
+  await change('wheel-step-D02', 0.1, 'input');
+  await doubleClick('wheel-toggle-D02');
+  await doubleClick('wheel-toggle-D02');
+  assert.equal(await evaluate('wheelTarget'), null, 'confirming double-click does not accidentally re-enter');
+  await evaluate(`document.getElementById('scene-settings').open=true;document.getElementById('noise-seed').focus()`);
+  await key('ArrowUp'); assert.equal(await evaluate(`document.getElementById('noise-seed').value`), '18', 'setup editor retains native arrows');
+  assert.equal(await evaluate('selectedTerm'), 'D02');
+  await key('Enter'); assert.equal(await evaluate('wheelTarget'), null, 'setup Enter does not activate tuning');
+  await change('noise-seed', 17); await click('zero');
+  // Left/right keys share the wheel's current step and transaction; outside a
+  // session they do not become global coefficient shortcuts.
+  await change('value-D10', 7.5, 'input'); await change('value-D01', 2.25, 'input');
+  await evaluate(`document.getElementById('row-D10').focus()`);
+  const keyboardState = `JSON.stringify({controls,image:lastFrame.image_png,spectrum:lastFrame.spectrum,metrics:lastFrame.metrics})`;
+  const keyboardStart = await evaluate(keyboardState);
+  await key('ArrowLeft'); await key('ArrowRight');
+  assert.equal(await evaluate(keyboardState), keyboardStart, 'normal row focus does not activate left/right tuning');
+  await key('Enter');
+  const keyboardScroll = await evaluate('JSON.stringify([scrollX,scrollY])');
+  await key('ArrowRight'); assert.equal(await evaluate('controls.D10'), 7.6);
+  assert.equal(await evaluate(`Number(document.getElementById('slide-D10').value) === 7.6 && Number(document.getElementById('value-D10').value) === 7.6 && lastFrame.controls.D10 === 7.6`), true, 'left/right synchronizes controls and final frame');
+  await key('ArrowLeft'); assert.equal(await evaluate(keyboardState), keyboardStart, 'one left step reverses one right step exactly');
+  await key('ArrowUp'); await key('ArrowRight');
+  assert.equal(await evaluate('controls.D10'), 8.5, 'right uses the step just changed by Up');
+  await key('ArrowDown'); await key('ArrowLeft');
+  assert.equal(await evaluate('controls.D10'), 8.4, 'left uses the step just changed by Down');
+  assert.equal(await evaluate('wheelTarget'), 'D10');
+  assert.equal(await evaluate('selectedTerm'), 'D10');
+  assert.equal(await evaluate('controls.D01'), 2.25, 'keyboard only changes the active coefficient');
+  assert.equal(await evaluate('JSON.stringify([scrollX,scrollY])'), keyboardScroll, 'left/right never scroll during tuning');
+  await escape(); assert.equal(await evaluate(keyboardState), keyboardStart, 'Escape restores mixed step/key transaction');
+  await change('wheel-step-D10', 0.25, 'input'); await key('Enter');
+  await key('ArrowRight'); await wheelAt('spot', -120); await key('ArrowLeft');
+  assert.equal(await evaluate('controls.D10'), 7.75, 'custom keyboard and wheel steps share one transaction');
+  await key('Enter'); await escape(); assert.equal(await evaluate('controls.D10'), 7.75, 'Enter confirms keyboard adjustment');
+  const keyboardCommitted = await evaluate(keyboardState);
+  await key('Enter');
+  for (const invalid of [0, -1, '', 0.015]) {
+    await change('wheel-step-D10', invalid, 'input');
+    await key('ArrowRight'); await key('ArrowLeft');
+    assert.equal(await evaluate('controls.D10'), 7.75, 'invalid step rejects both keyboard directions');
+  }
+  await change('wheel-step-D10', 0.25, 'input');
+  for (const modifiers of [1,2,4,8]) {
+    await key('ArrowRight', {modifiers}); await key('ArrowLeft', {modifiers});
+    assert.equal(await evaluate('controls.D10'), 7.75, 'modified arrows do not change coefficients');
+  }
+  await evaluate('window.fetch=window.__delayedFetch');
+  await command('Input.dispatchKeyEvent', {type:'keyDown',key:'ArrowRight',code:'ArrowRight'});
+  await command('Input.dispatchKeyEvent', {type:'keyUp',key:'ArrowRight',code:'ArrowRight'});
+  await waitFor(() => evaluate('running && window.__inFlight > 0'), 'slow keyboard tuning frame in flight');
+  const framesBeforeKeyboardUndo = await evaluate('window.__frames.length');
+  await escape(); assert.equal(await evaluate(keyboardState), keyboardCommitted);
+  assert.equal(await evaluate(`window.__frames.slice(${framesBeforeKeyboardUndo}).every(f => f.value===7.75)`), true, 'late keyboard frame cannot overwrite undo');
+  await evaluate('window.fetch=window.__originalFetch');
+  await key('Enter'); await key('ArrowRight'); await pointerClick('zero');
+  assert.equal(await evaluate('controls.D10'), 8, 'single-click confirms keyboard adjustment without triggering zero');
+  assert.equal(await evaluate('wheelTarget'), null);
+  for (const [start, arrow, bound] of [[119.99,'ArrowRight',120],[-119.99,'ArrowLeft',-120]]) {
+    await change('value-D10', start, 'input'); await evaluate(`document.getElementById('row-D10').focus()`); await key('Enter');
+    await key(arrow); await key(arrow, {autoRepeat:true});
+    assert.equal(await evaluate('controls.D10'), bound, 'keyboard step clamps at the same wheel limit');
+    await escape(); assert.equal(await evaluate('controls.D10'), start);
+  }
+  await change('value-D10', 0, 'input'); await change('wheel-step-D10', 0.01, 'input');
+  await key('Enter'); await key('ArrowRight'); await key('ArrowRight', {autoRepeat:true});
+  assert.equal(await evaluate('controls.D10'), 0.02, 'each repeat event advances one minimum step without drift');
+  await escape(); await change('wheel-step-D10', 0.1, 'input'); await click('zero');
+  // Double-click activation starts a transaction: global wheel capture, left-click
   // commits, Escape restores the activation snapshot (not zero or last frame).
   await command('Emulation.setDeviceMetricsOverride', {width: 1600, height: 900, deviceScaleFactor: 1, mobile: false});
   // Expand ancillary content to make page scrolling possible even when the
@@ -188,11 +315,13 @@ try {
   assert.equal(await evaluate('controls.D10'), 0, 'inactive focused number must not spin natively');
   assert.ok(pageScroll.after > pageScroll.before, 'inactive wheel still scrolls the page');
   await doubleClick('value-D10');
-  assert.equal(await evaluate('wheelTarget'), null, 'double-click no longer activates tuning');
+  assert.equal(await evaluate('wheelTarget'), null, 'double-clicking a number is not double-clicking the arrows');
   await change('value-D10', 7.5, 'input');
   await change('value-D01', 2.25, 'input');
   await pointerClick('wheel-toggle-D10');
-  assert.equal(await evaluate('wheelTarget'), 'D10', 'activation click must not stop its own session');
+  assert.equal(await evaluate('wheelTarget'), null, 'single click selects only');
+  await doubleClick('wheel-toggle-D10');
+  assert.equal(await evaluate('wheelTarget'), 'D10', 'double arrow double-click starts exactly one session');
   assert.equal(await evaluate(`document.getElementById('wheel-session').hidden`), false);
   assert.equal(await evaluate(`document.getElementById('wheel-toggle-D10').getAttribute('aria-pressed')`), 'true');
   for (const target of ['spot', 'value-D01', 'wheel-step-D01']) {
@@ -219,7 +348,7 @@ try {
   await change('wheel-step-D10', 0.25, 'input');
   const stateExpression = `JSON.stringify({controls,spectrum:lastFrame.spectrum,image:lastFrame.image_png,metrics:lastFrame.metrics})`;
   const beforeUndo = await evaluate(stateExpression);
-  await pointerClick('wheel-toggle-D10');
+  await doubleClick('wheel-toggle-D10');
   await wheelAt('spectrum', -120); await wheelAt('spectrum', -120); await wheelAt('spectrum', 120);
   assert.equal(await evaluate('controls.D10'), 8.05, 'custom step and reverse direction');
   await escape();
@@ -228,7 +357,7 @@ try {
   assert.equal(await evaluate('controls.D10'), 7.8, 'undo is relative to this session, not application startup');
 
   // Escape with a slow tuning frame in flight must not flash the undone value.
-  await pointerClick('wheel-toggle-D10');
+  await doubleClick('wheel-toggle-D10');
   await evaluate('window.fetch=window.__delayedFetch');
   const slowWheel = await centre('spot');
   await command('Input.dispatchMouseEvent', {type: 'mouseWheel', x: slowWheel.x, y: slowWheel.y, deltaX: 0, deltaY: -120});
@@ -241,13 +370,13 @@ try {
 
   for (const invalid of [0, -1, '', 0.015]) {
     await change('wheel-step-D10', invalid, 'input');
-    await pointerClick('wheel-toggle-D10');
+    await doubleClick('wheel-toggle-D10');
     assert.equal(await evaluate('wheelTarget'), null, `invalid step ${invalid} must not start a session`);
     assert.equal(await evaluate('controls.D10'), 7.8);
     assert.match(await evaluate(`document.getElementById('wheel-note-D10').textContent`), /不执行/);
   }
   await change('wheel-step-D10', 0.25, 'input');
-  await pointerClick('wheel-toggle-D10');
+  await doubleClick('wheel-toggle-D10');
   await change('wheel-step-D10', 0, 'input'); // Simulate invalid keyboard editing during tuning.
   const invalidScroll = await wheelAt('spot', -120);
   assert.equal(invalidScroll.before, invalidScroll.after);
@@ -255,13 +384,13 @@ try {
   await escape();
   await change('wheel-step-D10', 0.25, 'input');
   for (const [start, deltaY, limit] of [[119.99, -120, 120], [-119.99, 120, -120]]) {
-    await change('value-D10', start, 'input'); await pointerClick('wheel-toggle-D10');
+    await change('value-D10', start, 'input'); await doubleClick('wheel-toggle-D10');
     await wheelAt('spot', deltaY);
     assert.equal(await evaluate('controls.D10'), limit, 'coefficient bound');
     await escape(); assert.equal(await evaluate('controls.D10'), start, 'undo at bound');
   }
   await change('value-D10', 0, 'input');
-  await pointerClick('wheel-toggle-D01');
+  await doubleClick('wheel-toggle-D01');
   assert.equal(await evaluate(`document.querySelectorAll('.wheel-active').length`), 1);
   await wheelAt('value-D10', -120);
   assert.equal(await evaluate('controls.D01'), 2.35);
@@ -269,13 +398,15 @@ try {
   await pointerClick('wheel-toggle-D10');
   assert.equal(await evaluate('wheelTarget'), null, 'first left-click stops instead of switching targets');
   await pointerClick('wheel-toggle-D10');
+  assert.equal(await evaluate('wheelTarget'), null, 'next single click selects but does not activate');
+  await key('Enter');
   assert.equal(await evaluate('wheelTarget'), 'D10');
   assert.equal(await evaluate(`document.getElementById('wheel-step-D10').value`), '0.25', 'per-row step retained');
   await wheelAt('spot', -120);
   await pointerClick('wheel-toggle-D10');
   assert.equal(await evaluate('wheelTarget'), null, 'clicking the active button stops without reactivating');
   assert.equal(await evaluate('controls.D10'), 0.25);
-  await pointerClick('wheel-toggle-D10'); await wheelAt('spot', -120);
+  await doubleClick('wheel-toggle-D10'); await wheelAt('spot', -120);
   await evaluate(`window.dispatchEvent(new Event('blur'))`);
   assert.equal(await evaluate('wheelTarget'), null, 'window blur safely ends capture');
   assert.equal(await evaluate('controls.D10'), 0.5, 'blur preserves current adjustment');
@@ -292,9 +423,10 @@ try {
   await click('reveal');
   assert.equal(await evaluate(`document.getElementById('feedback').hidden`), false);
   assert.equal(await evaluate(`document.querySelectorAll('#answer-rows tr').length`), 9);
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#answer-rows tr'), r => r.cells[0].textContent)`), displayOrder.slice(0,9));
   const practiceState = `JSON.stringify({controls,image:lastFrame.image_png,spectrum:lastFrame.spectrum,metrics:lastFrame.metrics,question:lastFrame.question,feedback:lastFrame.feedback})`;
   const practiceBefore = await evaluate(practiceState);
-  await pointerClick('wheel-toggle-D11'); await wheelAt('spot', -120); await escape();
+  await doubleClick('wheel-toggle-D11'); await wheelAt('spot', -120); await key('ArrowRight'); await escape();
   assert.equal(await evaluate(practiceState), practiceBefore, 'practice rollback preserves question, reveal state and coefficient residuals');
   await evaluate(`document.querySelectorAll('#answer-rows tr').forEach(row => {const el=document.getElementById('value-'+row.cells[0].textContent);el.value=Number(row.cells[3].textContent);el.dispatchEvent(new Event('input', {bubbles:true}));})`);
   await idle();
@@ -329,7 +461,7 @@ try {
   assert.equal(await evaluate(stateExpression), beforeResize, 'resizing does not alter simulation, controls or metrics');
   assert.equal(frameRequestCount(), requestsBeforeResize, 'resizing does not request a new simulation');
   // Actually tune the last coefficient without scrolling at laptop size.
-  await pointerClick('wheel-toggle-D03');
+  await doubleClick('wheel-toggle-D03');
   const lastRowScroll = await wheelAt('spot', -120);
   assert.equal(await evaluate('controls.D03'), 0.1);
   assert.equal(lastRowScroll.before, 0);
@@ -343,12 +475,19 @@ try {
   for (const [width,height] of [[1024,768],[720,720],[390,844]]) {
     await command('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile: false});
     await evaluate(`document.getElementById('row-D03').scrollIntoView({block:'end'});new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
-    await assertWorkbenchVisible('narrow last row and sticky plots', false);
-    await pointerClick('wheel-toggle-D03');
+    await assertWorkbenchVisible('narrow all nine rows and sticky plots');
+    await doubleClick('wheel-toggle-D03');
     const held = await wheelAt('spot', -120);
     assert.equal(held.after, held.before);
     assert.equal(await evaluate('controls.D03'), 0.1);
-    await assertWorkbenchVisible('narrow active last row and sticky plots', false);
+    await assertWorkbenchVisible('narrow active all nine rows and sticky plots');
+    await key('ArrowUp');
+    assert.equal(await evaluate('selectedTerm'), 'D03');
+    assert.equal(await evaluate(`document.getElementById('wheel-step-D03').value`), '1');
+    await key('ArrowDown'); await key('ArrowLeft');
+    assert.equal(await evaluate('controls.D03'), 0);
+    await key('ArrowRight'); assert.equal(await evaluate('controls.D03'), 0.1);
+    await assertWorkbenchVisible('narrow keyboard single-step tuning remains same-screen');
     const shot = await command('Page.captureScreenshot', {format: 'png', captureBeyondViewport: false});
     await writeFile(join(root, artifactDirectory, width === 390 ? 'browser-narrow.png' : `layout-${width}x${height}.png`), Buffer.from(shot.data, 'base64'));
     await escape();
@@ -360,12 +499,19 @@ try {
   await change('value-D01', 2.5, 'input');
   await pointerClick('page-4');
   assert.equal(await evaluate('currentPage'), 4);
+  assert.equal(await evaluate('selectedTerm'), 'D40');
+  await key('ArrowDown'); assert.equal(await evaluate('selectedTerm'), 'D31', 'paging leaves keyboard navigation ready');
+  await key('Enter'); assert.equal(await evaluate('wheelTarget'), 'D31');
+  await wheelAt('spot', -120); await escape();
+  assert.equal(await evaluate('controls.D31'), 0);
   const fourth = ['D40','D31','D22','D13','D04'], fifth = ['D50','D41','D32','D23','D14','D05'];
   assert.deepEqual(await evaluate(`names.filter(n => !document.getElementById('row-'+n).hidden)`), fourth);
   await change('value-D40', 5, 'input'); await change('value-D22', -3, 'input'); await change('value-D04', 4, 'input');
   await assertWorkbenchVisible('fourth-order free page', fourth);
   const beforePage = await evaluate(stateExpression), requestsBeforePage = frameRequestCount();
   await pointerClick('page-5');
+  assert.equal(await evaluate('selectedTerm'), 'D50');
+  await key('ArrowDown'); assert.equal(await evaluate('selectedTerm'), 'D41');
   assert.equal(await evaluate(stateExpression), beforePage, 'paging alone preserves all simulation data');
   assert.equal(frameRequestCount(), requestsBeforePage, 'paging makes no frame request');
   assert.deepEqual(await evaluate(`names.filter(n => !document.getElementById('row-'+n).hidden)`), fifth);
@@ -383,14 +529,14 @@ try {
   assert.equal(await evaluate('lastFrame.controls.D05'), 8);
   await evaluate('window.fetch=window.__originalFetch');
   await pointerClick('page-5'); await change('wheel-step-D05', 0.25, 'input');
-  await pointerClick('wheel-toggle-D05'); await wheelAt('spot', -120);
+  await doubleClick('wheel-toggle-D05'); await wheelAt('spot', -120);
   await pointerClick('page-4');
   assert.equal(await evaluate('currentPage'), 5, 'stopping click cannot also change the page');
   assert.equal(await evaluate('controls.D05'), 8.25);
   await pointerClick('page-4'); await pointerClick('page-5');
   assert.equal(await evaluate(`document.getElementById('wheel-step-D05').value`), '0.25');
   const highBeforeUndo = await evaluate(stateExpression);
-  await pointerClick('wheel-toggle-D05'); await wheelAt('spectrum', -120); await escape();
+  await doubleClick('wheel-toggle-D05'); await wheelAt('spectrum', -120); await key('ArrowRight'); await key('ArrowLeft'); await escape();
   assert.equal(await evaluate(stateExpression), highBeforeUndo, 'high-order undo preserves previously adjusted terms on every page');
   await pointerClick('zero');
   assert.equal(await evaluate('Object.values(controls).every(v => v === 0)'), true, 'zero clears every page');
@@ -414,6 +560,9 @@ try {
   assert.equal(await evaluate('currentPage'), 3);
   assert.equal(await evaluate(`document.getElementById('page-4').disabled && document.getElementById('page-5').disabled`), true);
   assert.equal(await evaluate(`document.querySelectorAll('.coefficient:not([hidden])').length`), 2);
+  await pointerClick('wheel-toggle-D01'); await key('ArrowDown');
+  assert.equal(await evaluate('selectedTerm'), 'D01', 'selection skips every unavailable term in one-order exercise');
+  await key('Enter'); assert.equal(await evaluate('wheelTarget'), 'D01'); await escape();
   // Each maximum admits only its own candidate terms; reveal and compensation
   // span every eligible page, while retry preserves the question and its order.
   for (const [order,count] of [[1,2],[2,5],[3,9],[4,14],[5,20]]) {
@@ -423,13 +572,14 @@ try {
     assert.equal(await evaluate(`'feedback' in lastFrame`), false);
     await click('reveal');
     assert.equal(await evaluate(`document.querySelectorAll('#answer-rows tr').length`), count);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#answer-rows tr'), r => r.cells[0].textContent)`), displayOrder.slice(0,count));
     assert.equal(await evaluate(`Object.values(lastFrame.feedback.initial).filter(v => v!==0).length`), count);
     assert.equal(await evaluate(`names.filter(n => orders[n]>${order}).every(n => lastFrame.feedback.initial[n]===0)`), true);
     const questionImage = await evaluate('lastFrame.image_png');
     if (order >= 4) {
       await pointerClick(`page-${order}`); await evaluate('window.scrollTo(0,0)');
       const term = order === 4 ? 'D04' : 'D05', terms = order === 4 ? fourth : fifth;
-      await pointerClick(`wheel-toggle-${term}`);
+      await doubleClick(`wheel-toggle-${term}`);
       const scroll = await wheelAt('spot', -120);
       assert.equal(scroll.before, 0); assert.equal(scroll.after, 0);
       await assertWorkbenchVisible(`order ${order} practice tuning, laptop viewport`, terms);
@@ -453,7 +603,7 @@ try {
       await pointerClick(`page-${page}`);
       await assertWorkbenchVisible(`narrow high-order page ${page}`, terms);
       const term = terms.at(-1);
-      await pointerClick(`wheel-toggle-${term}`);
+      await doubleClick(`wheel-toggle-${term}`);
       const scroll = await wheelAt('spot', -120);
       assert.equal(scroll.before, scroll.after);
       await assertWorkbenchVisible(`narrow active high-order page ${page}`, terms);
@@ -512,7 +662,7 @@ try {
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
     drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
-    checks: ['per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'button-only wheel activation', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'sticky plots during narrow last-row tuning', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    checks: ['per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
     screenshots: [`${artifactDirectory}/difficulty-medium-20.png`, `${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();

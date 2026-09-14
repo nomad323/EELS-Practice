@@ -1,5 +1,7 @@
 # 离线软件验证记录
 
+当前快捷键见「截图风格、显示顺序与键盘滚轮会话（2026-09-14）」及末节「滚轮模式左右键单步调整」；配色以「恢复原有深色配色」为准。前面“单击按钮启用”、粉色界面等均为保留的历史记录。
+
 ## 环境与范围
 
 - 检查日期：2026-09-12（环境时区 +08:00）；执行者：AI 编码助手。
@@ -321,3 +323,81 @@ sha256sum raw/20260912/*
 证据独立保存在 **`processed/validation/difficulty-v1/`**：`training-before.py`（修改前源码）、`before.json`、`after.json`（实际题目/场景/测量）、`comparison.txt`、`before-tests.txt`、`unit-http-tests.txt`、`browser-run.txt`、`browser-final.json`，以及 `difficulty-medium-20.png`、`browser-*.png`、`layout-*.png`、`order-*.png`。未覆盖旧轮验证目录和原件；未改 `PLAN.md` 或管理日志。
 
 没有安装依赖、导入外部源码、停止用户服务、提交、部署或仪器操作。只临时启动/关闭测试自己的回环服务和浏览器。用户需先按需导出当前会话，再自行停止并重新运行 `python3 run.py`、浏览器 Ctrl+F5 并重新出题。Windows→WSL2、用户主观练习难度及仪器准确性仍未验收；高阶弱可见性和正负抵消仍存在，不保证任意场景的视觉难度。
+
+## 截图风格、显示顺序与键盘滚轮会话（2026-09-14）
+
+### 参考与实施边界
+
+- 实际读取 `raw/20260914/Screenshot 2026-09-14 1641482.png`、`Screenshot 2026-09-14 1642163.png`。观察：粉色 TuneUp 为 D10、D01、D02、D20、D11；另一张表的二阶顺序为 E20、E02、E11，与之不一致。实现取舍：以前者作为低阶排序及全界面视觉主参考，三阶/四阶/五阶接续后者的幂次顺序。此取舍已向用户说明，不声称两图完全同序。
+- 参数、键盘遍历和答案表显示顺序统一为 `D10,D01,D02,D20,D11,D30,D21,D12,D03 / D40,D31,D22,D13,D04 / D50,D41,D32,D23,D14,D05`；前五项显示 FX/FY/C/D/SY 标签。保留 9/5/6 分页及所有 20 项，不添加截图中的其他仪器控制量，不更改 meV 单位、范围、前向模型、API/NPZ 规范项序或种子对应系数。按项名映射幂次，避免重排后错配 D02/D20。
+- 全部应用面板统一为粉底、黑色分组线、白底蓝字输入/指标及方形灰按钮；行末灰底白色 ↔，黑底白信号图谱不变。桌面仍左控右图，窄屏改为更紧凑的单行控件，图谱吸附于上方。
+- 正常 ↑↓ 选择而不改系数；单击行/↔ 只选择；双击 ↔ 或 Enter 开始。活动中 ↑ 步长 ×10、↓ ÷10，限制 0.01～120，按 0.01 精度取整，不改物理量或发起模拟。Enter/左键单击确认，Esc 撤销本次开始时的全系数快照及图谱，步长保留。长按 Enter 和用于确认的双击不能误开新会话；确认点击不穿透。各页记住选择，翻页后焦点回到当前参数，缩减练习阶域不会选择隐藏/禁用项。
+- 正常场景/出题输入保持原生键盘操作；活动中暂时拦截 Tab，结束后恢复。保留全页滚轮、单在途请求、迟到帧撤销保护、失焦安全结束及跨页叠加。
+
+### 实际检查
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/reference-ui-v1
+git diff --check
+sha256sum raw/20260914/* raw/20260912/*
+```
+
+- **33 项 Python 单元/HTTP 测试全部通过，3.158 s**；两项 Node 语法检查通过。补写本节后空白检查曾发现本文件末尾多余空行，去掉后最终 `git diff --check` 通过。后端未改，既有幂次/别名、固定种子、基线、导出标签及精确补偿回归继续通过。
+- **两轮 Chromium 149.0.7827.55 实际浏览器回归均 PASS**，没有测试失败。首轮后代码复查补上翻页后的键盘焦点，并将窄屏断言从“末行可见”加强为“当前页全部参数可见”，再完整复测。测试编辑曾因一处重复文本匹配被工具拒绝，修正定位后完成，未部分改写文件。
+- 新增真实 DevTools 键盘/双击检查：九项按显示序遍历；聚焦数值/滑块/步长框时 ↑↓ 不触发原生系数增减；页边界停住；四/五阶翻页后可立即键盘选择，一阶题不能选到禁用项。正常选择及步长变更不发起模拟，系数不变。默认步长 0.1 经 ↑ 到 1、↓ 回 0.1，连续按键分别限制于 0.01/120；Enter 确认后 Esc 不撤销已确认值，新会话 Esc 恢复新起点。场景噪声种子输入保留原生 ↑，其 Enter 不误开会话。
+- 自动检查全部 20 个 DOM 参数名顺序、D02/D20/D11 幂次标签、全部面板粉底及白底蓝字输入、灰按钮 ↔；最高 1～5 阶的答案表分别按同一显示序显示 2/5/9/14/20 行。完整主题的细节另通过读取截图检查，不把颜色断言当成逐像素复刻证明。
+- **1920×1080、1600×900、1366×768、1280×660、1280×600**：练习、揭示答案及展开场景/导出后，九项完整控件、两幅图、FWHM 仍在同一视口。**1024×768、720×720、390×844**：滚入调节区后，同样断言当前九项全部控件及图谱无遮挡；活动末行时 ↑↓ 只改其步长，滚轮不翻页。四/五阶桌面及窄屏所有当前项也通过同屏检查。截图为视口截图，不是整页长图。
+- 既有慢响应拖动、全页滚轮、单击不穿透、Esc 恢复图谱/残差及迟到帧保护、分页不模拟、跨页系数/步长保留、全阶练习及精确补偿继续通过。额外 80 ms 响应延迟测试中松手前显示 **6 帧**，最多 1 个请求在途；基线为 **8.002 meV**。未捕获 JS 异常或应用外部网络请求。
+- 已实际读取检查最终桌面九项、五阶及 390 宽九项/五阶截图。两个新截图 SHA256 前后相同：`1641482` 为 `2fef64eef1ba422b5fa2f3d5d8e77142c64208d37facc4dc2085cdef9735ced5`，`1642163` 为 `1376e20b8ba1f2bae82bd1eb14af79c5a0a53d2d03f0ade26352debb91ef8586`；20260912 原件哈希亦与既有基线相同。
+
+### 保存路径、更新与限制
+
+- 修改 7 个文件：`src/eels_sim/web/{app.js,index.html,style.css}`、`tests/browser_smoke.mjs`、`README.md`、`docs/requirements.md`、本文件。
+- 证据保存至 `processed/validation/reference-ui-v1/`：`unit-http-tests.txt`、`browser-first.json`、`browser-final.json`、`browser-desktop.png`、`browser-narrow.png`、`browser-order-{4,5}.png`、`layout-*.png`、`order-*.png`、`difficulty-medium-20.png`。未覆盖前几轮验证目录。
+- 未改 raw、模型/后端、依赖、PLAN 或原先已有修改的 `logs/project.log`；无安装、外部源码导入、提交、部署或仪器操作。测试临时启动的回环服务/浏览器均已停止，未操作用户服务。
+- 已运行当前后端的用户先按需导出会话，再 **Ctrl+F5** 加载新前端，无需重启。只在页面提示旧后端不兼容时需自行重启后端。刷新会重建浏览器会话。
+- Windows→WSL2 转发、真实鼠标/触控板手感、字体与缩放、不同系统双击阈值仍待用户实际验收；步长 ×10/÷10 是本轮交互实现选择，不是设备 API 或已验证仪器惯例。不保证任意更小视口全部同屏；没有硬件连接、控制或安全验收。
+
+## 恢复原有深色配色（2026-09-14）
+
+用户明确要求配色继续用原来的方案。本轮以 Git HEAD 中改动前的 CSS 色值为依据，仅恢复深色背景、面板、输入框、浅色文字、灰色按钮及警告/错误颜色；保留新的字号、尺寸、排列、参数顺序和全部键盘/滚轮交互。未改 `app.js`、`index.html` 或模型/后端。
+
+实际修改：`src/eels_sim/web/style.css`、`tests/browser_smoke.mjs`、`README.md`、`docs/requirements.md`、本文件。测试颜色断言改为原有深色方案，覆盖所有面板、页面背景、输入文字/背景及警告/错误色。
+
+实际执行两项 Node 语法检查和完整浏览器回归：
+
+```bash
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/dark-palette-v1
+git diff --check
+```
+
+均通过，无本轮测试失败。Chromium 149.0.7827.55：原有桌面/窄屏全参数与图谱同屏、参数顺序、上下键选择/步长、Enter/双击启用、确认/撤销、分页及慢响应回归继续 PASS；基线 8.002 meV，额外延迟拖动测试松手前显示 5 帧。未捕获 JS 异常或应用外部请求。本轮没有重新运行 Python 单元测试（未改 Python）。
+
+结果与视口截图独立保存至 `processed/validation/dark-palette-v1/`，汇总为 `browser-test.json`；已读取检查 `browser-desktop.png`、`browser-narrow.png`。未覆盖上一轮粉色截图证据。测试临时服务/浏览器已停止；未操作用户服务、raw、PLAN、原有管理日志、依赖或仪器，也未提交/部署。Windows 实际显示与手感仍待用户验收。先按需导出当前会话，再 Ctrl+F5 加载配色，无需重启后端。
+
+## 滚轮模式左右键单步调整（2026-09-14）
+
+用户新增要求按键左右单步移动；本轮实现为键盘 ← 减少当前步长、→ 增加当前步长，仅在滚轮会话内生效。每个 keydown 一步，支持系统长按重复；修饰键组合不调系数。与滚轮共用 `nudgeCoefficient()`，统一步长校验、整数百分单位累计、±120 限幅和实时帧调度。上下键改步长、Enter/单击确认、Esc 撤销、参数顺序及深色配色不变。
+
+修改：`src/eels_sim/web/{app.js,index.html}`、`tests/browser_smoke.mjs`、`README.md`、`docs/requirements.md`、本文件。未改 CSS、模型/后端、raw、PLAN 或既有管理日志。
+
+实际执行并通过：
+
+```bash
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/arrow-nudge-v1
+git diff --check
+```
+
+- Chromium 149.0.7827.55 完整浏览器回归 **PASS**，本轮无测试失败。新增真实键盘输入验证：默认 0.1 左右互逆、上下键改变步长后立即采用新步长、自定 0.25 与滚轮混用、仅改变活动项且不滚页、数值/滑块/最终帧同步、正常模式不新增全局单步快捷键。
+- 新增 ±120 限幅、0.01 最小步长及重复键事件、四种非法步长、Ctrl/Meta/Alt/Shift 修饰键、Enter 与单击确认、非零起点 Esc 精确恢复图谱，以及按键帧延迟到达不能覆盖撤销的检查。高阶跨页系数保留、练习答案/残差恢复及窄屏末行左右键操作继续通过。
+- 既有桌面/窄屏全部当前项与两幅图/FWHM 同屏、深色配色、连续拖动与全页滚轮回归通过；未捕获 JS 异常或应用外部请求。基线 8.002 meV，额外延迟拖动测试松手前 6 帧。未重新运行 Python 单元测试（未改 Python）。
+- 结果及视口截图保存至 `processed/validation/arrow-nudge-v1/`，汇总为 `browser-test.json`；已读取检查桌面及 390 宽截图，未覆盖旧验证目录。
+
+测试临时回环服务/浏览器已停止；未操作用户服务、安装依赖、提交、部署或连接仪器。先按需导出当前会话，再 Ctrl+F5 加载，无需重启后端。Windows 实际按键/长按手感与 WSL2 转发仍待用户验收。
