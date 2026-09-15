@@ -168,6 +168,14 @@ python3 run_desktop.py --self-test /chosen/path/report.json  # 不打开浏览�
 
 实际命令、结果、失败修复和未验证项见 [验证记录](docs/validation.md)。原始 `raw/20260912/xiangcha.py` 与截图保持不变；`src/eels_sim/legacy.py` 保存其默认数值行为和任意单位约定，用作回归/对照，而不是把旧参数标成 meV。停止新服务即可退出新程序；没有修改原始配置、系统服务或仪器。未进行提交、部署或硬件验收。
 
+## GitHub 发布边界
+
+Git 仓库仅包含源码、测试、构建脚本及软件文档。`.gitignore` 排除 `raw/` 原件/参考截图、`processed/` 派生数据/验证图/便携包、本地管理日志与状态、虚拟环境、缓存、凭据及构建产物；忽略不等于备份。`.env.example` / `.env.template` 只允许占位符，不得放真实凭据。`AGENTS.md` 是可共享的项目开发规则，保留入库。
+
+上文的 `processed/releases/` 和 Windows 临时目录是本地交付位置，**不是 GitHub 下载链接**；克隆源码不会获得旧 ZIP 或验证图片。审核后的二进制可另行发布到 GitHub Releases；本轮未上传成品。原脚本未分发时，对照 raw 的测试会明确跳过，固定数值回归仍可运行。
+
+`.gitignore` 不会删除已有提交中的内容。既有历史含本机路径、作者邮箱和管理记录；保留历史上传会一并公开这些内容。公开前还应确认导入脚本及其 `src/eels_sim/legacy.py` 派生代码的分发权，并由所有者选择许可；当前没有项目级 `LICENSE`，不能把上传 GitHub 等同于已授予开源许可。检查范围、限制及待确认项见 [发布前检查](docs/validation.md#github-发布前检查)。
+
 ## 文件布局
 
 - `src/eels_sim/model.py`：一至五阶 20 项基函数、采样、前向成像、谱宽分析。

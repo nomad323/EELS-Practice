@@ -2,19 +2,78 @@
 raw/
 processed/
 
-# Optional temporary execution state
+# Local workspace metadata, management logs and temporary execution state
+# These rules do not remove files from existing commits.
 PLAN.md
+/.project-type
+/logs/
+
+# Local credentials; examples must contain placeholders only
+.env
+.env.*
+!.env.example
+!.env.template
+.secrets/
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.netrc
+.git-credentials
+.pypirc
 
 # Python-generated caches / local environments
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
 .venv/
-.venv-build-windows/
+.venv-*/
+venv/
+env/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.egg-info/
 
-# Local editor and temporary files
+# Build outputs / portable binaries (publish reviewed packages separately)
+/build/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.whl
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# Local exports; keep intentional fixtures in a reviewed tests/ subdirectory
+/exports/
+/eels-*.png
+/eels-*.npz
+
+# Local editor, OS and temporary files
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.log.*
 *.tmp
 *.swp
+*.swo
 *~
