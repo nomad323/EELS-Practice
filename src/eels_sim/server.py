@@ -12,7 +12,7 @@ import numpy as np
 
 from .model import Config, CONTROL_LIMIT, MAX_ORDER, MODEL_VERSION, POWERS, TERMS, coefficients, simulate, terms_through
 from .presentation import export_npz, frame, grayscale
-from .training import GENERATOR_VERSION, Exercise, checked_controls, new_exercise
+from .training import CUSTOM_AMPLITUDE_MIN, DIFFICULTY, GENERATOR_VERSION, Exercise, checked_controls, new_exercise
 
 WEB = Path(__file__).parent / "web"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -72,7 +72,7 @@ class Application:
             return self.render(session, data)
 
     def render(self, session, data):
-        allowed = {"session", "mode", "action", "controls", "config", "seed", "difficulty", "term_count", "max_order", "gamma", "vmax"}
+        allowed = {"session", "mode", "action", "controls", "config", "seed", "difficulty", "custom_amplitude", "term_count", "max_order", "gamma", "vmax"}
         if set(data) - allowed:
             raise ValueError("请求中含未知字段")
         mode, action = data.get("mode", "free"), data.get("action", "update")
@@ -86,7 +86,9 @@ class Application:
         grayscale(np.zeros((1, 1)), data.get("gamma", 0.5), data.get("vmax"))
         if mode == "practice":
             if action == "new" or session.exercise is None:
-                session.exercise = new_exercise(data.get("seed", 42), data.get("difficulty", "medium"), data.get("term_count", 9), config, max_order)
+                session.exercise = new_exercise(data.get("seed", 42), data.get("difficulty", "medium"),
+                                                data.get("term_count", 9), config, max_order,
+                                                custom_amplitude=data.get("custom_amplitude"))
                 session.revealed = False
                 controls = coefficients()
             if action == "retry":
@@ -111,7 +113,8 @@ class Application:
         if mode == "practice":
             response["question"] = {"seed": session.exercise.seed, "difficulty": session.exercise.difficulty,
                                     "term_count": session.exercise.term_count, "max_order": session.exercise.max_order,
-                                    "generator_version": session.exercise.generator_version}
+                                    "generator_version": session.exercise.generator_version,
+                                    "amplitude": session.exercise.amplitude}
             if session.revealed:
                 response["feedback"] = labels
         session.last_result, session.last_labels = result, labels
@@ -157,7 +160,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/meta":
             self.json_response(200, {"model_version": MODEL_VERSION, "terms": TERMS, "powers": POWERS,
                                      "max_order": MAX_ORDER, "default_practice_order": 3,
-                                     "generator_version": GENERATOR_VERSION,
+                                     "generator_version": GENERATOR_VERSION, "difficulties": DIFFICULTY,
+                                     "custom_amplitude_min": CUSTOM_AMPLITUDE_MIN,
                                      "control_limit": CONTROL_LIMIT, "defaults": asdict(Config())})
         else:
             self.json_response(404, {"error": "路径不存在"})

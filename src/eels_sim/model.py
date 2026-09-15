@@ -16,7 +16,7 @@ MAX_ORDER = 5
 POWERS = tuple((order-j, j) for order in range(1, MAX_ORDER+1) for j in range(order+1))
 TERMS = tuple(f"D{i}{j}" for i, j in POWERS)
 ALIASES = dict(zip(("x", "y", "x^2", "xy", "y^2", "x^3", "x^2 y", "x y^2", "y^3"), TERMS))
-CONTROL_LIMIT = 120.0
+CONTROL_LIMIT = 300.0
 FWHM_FACTOR = math.sqrt(8 * math.log(2))
 
 

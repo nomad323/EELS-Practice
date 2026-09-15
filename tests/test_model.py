@@ -10,7 +10,7 @@ from PIL import Image
 
 from eels_sim import Config, MODEL_VERSION, POWERS, TERMS, coefficients, polynomial, simulate, terms_through
 from eels_sim import legacy
-from eels_sim.model import FWHM_FACTOR, measure_spectrum
+from eels_sim.model import CONTROL_LIMIT, FWHM_FACTOR, measure_spectrum
 from eels_sim.presentation import export_npz, grayscale, png_bytes
 from eels_sim.training import GENERATOR_VERSION, checked_controls, new_exercise
 
@@ -38,13 +38,24 @@ class PolynomialTests(unittest.TestCase):
         for value in (0, 6, True, 3.0, '5', None):
             with self.assertRaises(ValueError): terms_through(value)
         with self.assertRaises(ValueError): coefficients({'D60': 1})
-        with self.assertRaises(ValueError): checked_controls({'D05': 120.01})
+        with self.assertRaises(ValueError): checked_controls({'D05': 300.01})
+
+    def test_all_twenty_control_limits(self):
+        self.assertEqual(CONTROL_LIMIT, 300)
+        for name in TERMS:
+            for value in (-300, 300):
+                self.assertEqual(checked_controls({name: value})[name], value)
+            for value in (-300.01, 300.01):
+                with self.assertRaises(ValueError): checked_controls({name: value})
+        # Effective residuals can be initial + control: do not cap the forward
+        # model at the UI limit, or valid same-sign compensation would fail.
+        self.assertEqual(coefficients({'D05': 600})['D05'], 600)
 
     def test_aliases_and_validation(self):
         self.assertEqual(coefficients({'x': 1, 'xy': 2, 'x y^2': 3})['D12'], 3)
         for value in ({'x2': 1}, {'D10': float('nan')}, {'D10': True}, {'D10': '2'}, {'x': 1, 'D10': 1}, []):
             with self.assertRaises(ValueError): coefficients(value)
-        with self.assertRaises(ValueError): checked_controls({'D10': 121})
+        with self.assertRaises(ValueError): checked_controls({'D10': 301})
         for values in ({'bogus': 1}, {'poisson': 1}, {'energy_bins': 800}, {'n_rays': 1}, {'pupil_x': float('inf')}, {'sample_seed': -1}, {'expected_counts': True}):
             with self.assertRaises(ValueError): Config.from_dict(values)
 
@@ -136,12 +147,12 @@ class ModelTests(unittest.TestCase):
 class TrainingTests(unittest.TestCase):
     def test_random_reproducibility_and_reachable_answer(self):
         for count in (1, 3, 9):
-            for difficulty in ('easy', 'medium', 'hard'):
+            for difficulty in ('easy', 'medium', 'hard', 'hell'):
                 exercise = new_exercise(1234, difficulty, count)
                 self.assertEqual(exercise, new_exercise(1234, difficulty, count))
                 self.assertEqual(sum(v != 0 for v in exercise.initial.values()), count)
                 answer = {k: -v for k, v in exercise.initial.items()}
-                self.assertLessEqual(max(abs(v) for v in answer.values()), 120)
+                self.assertLessEqual(max(abs(v) for v in answer.values()), CONTROL_LIMIT)
                 feedback = exercise.feedback(answer)
                 self.assertEqual(feedback['normalized_rms'], 0)
                 self.assertEqual(feedback['residual'], coefficients())
@@ -152,7 +163,7 @@ class TrainingTests(unittest.TestCase):
             for order in range(1, 6):
                 for count in range(1, len(terms_through(order))+1):
                     previous = None
-                    for level, low, high in (('easy', 7, 20), ('medium', 15.75, 45), ('hard', 31.5, 90)):
+                    for level, low, high in (('easy', 7, 20), ('medium', 15.75, 45), ('hard', 31.5, 90), ('hell', 105, 300)):
                         q = new_exercise(seed, level, count, max_order=order)
                         active = {n: v for n, v in q.initial.items() if v}
                         with self.subTest(seed=seed, order=order, count=count, level=level):
@@ -163,6 +174,37 @@ class TrainingTests(unittest.TestCase):
                                 self.assertTrue(all(v*previous[n] > 0 and abs(v) > abs(previous[n])
                                                     for n, v in active.items()))
                         previous = active
+
+    def test_custom_difficulty_reproducible_reachable_and_scene_independent(self):
+        config = Config(n_rays=4096)
+        baseline = simulate(config=config).counts
+        for order in range(1, 6):
+            for amplitude in (0.1, 20, 45, 90, 123.45, 300):
+                kwargs = dict(difficulty='custom', term_count=len(terms_through(order)),
+                              max_order=order, custom_amplitude=amplitude, config=config)
+                q = new_exercise(42, **kwargs)
+                self.assertEqual(q, new_exercise(42, **kwargs))
+                values = [abs(v) for v in q.initial.values() if v]
+                self.assertEqual(len(values), kwargs['term_count'])
+                self.assertTrue(all(round(0.35*amplitude, 2) <= v <= amplitude for v in values))
+                feedback = q.feedback({})
+                self.assertEqual(feedback['amplitude'], amplitude)
+                self.assertEqual(feedback['control_limit'], 300)
+                self.assertEqual(q.feedback(feedback['answer'])['normalized_rms'], 0)
+                np.testing.assert_array_equal(simulate(q.residual(feedback['answer']), config).counts, baseline)
+                changed_scene = replace(config, pupil_x=1.3, energy_half_range_mev=480, poisson=True)
+                self.assertEqual(q.initial, new_exercise(42, **dict(kwargs, config=changed_scene)).initial)
+                for level, cap in (('easy', 20), ('medium', 45), ('hard', 90), ('hell', 300)):
+                    if amplitude == cap:
+                        self.assertEqual(q.initial, new_exercise(42, level, kwargs['term_count'], max_order=order).initial)
+
+    def test_invalid_custom_amplitudes(self):
+        for amplitude in (None, True, False, '90', [], {}, float('nan'), float('inf'), -float('inf'), -1, 0, 0.09, 300.01):
+            with self.subTest(amplitude=amplitude), self.assertRaises(ValueError):
+                new_exercise(42, 'custom', custom_amplitude=amplitude)
+        for difficulty in (None, [], {}, True):
+            with self.assertRaises(ValueError): new_exercise(42, difficulty)
+        self.assertEqual(new_exercise(42, custom_amplitude=999), new_exercise(42))
 
     def test_scene_does_not_rescale_labels(self):
         for order, count in ((3, 9), (5, 20)):
@@ -203,23 +245,23 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(q.initial, coefficients(expected))
         self.assertEqual(q.max_order, 3)
         self.assertEqual(q.feedback({})['generator_version'], GENERATOR_VERSION)
-        self.assertAlmostEqual(q.feedback({})['normalized_rms'], np.sqrt(np.mean(np.square(list(expected.values()))))/120)
+        self.assertAlmostEqual(q.feedback({})['normalized_rms'], np.sqrt(np.mean(np.square(list(expected.values()))))/CONTROL_LIMIT)
 
     def test_all_orders_reproducible_reachable_and_coefficient_bounded(self):
         baseline = simulate().counts
         for order in range(1, 6):
             eligible = terms_through(order)
             for count in (1, len(eligible)):
-                for level in ('easy', 'medium', 'hard'):
+                for level in ('easy', 'medium', 'hard', 'hell'):
                     q = new_exercise(42, level, count, max_order=order)
                     self.assertEqual(q, new_exercise(42, level, count, max_order=order))
                     self.assertEqual(sum(v != 0 for v in q.initial.values()), count)
                     self.assertTrue(all(q.initial[n] == 0 for n in TERMS if n not in eligible))
-                    self.assertLessEqual(max(abs(v) for v in q.initial.values()), 90)
+                    self.assertLessEqual(max(abs(v) for v in q.initial.values()), CONTROL_LIMIT)
                     feedback = q.feedback({})
                     self.assertEqual(feedback['eligible_terms'], eligible)
                     self.assertEqual(feedback['max_order'], order)
-                    expected_score = np.sqrt(np.mean([q.initial[n]**2 for n in eligible]))/120
+                    expected_score = np.sqrt(np.mean([q.initial[n]**2 for n in eligible]))/CONTROL_LIMIT
                     self.assertAlmostEqual(feedback['normalized_rms'], expected_score)
                     self.assertEqual(q.feedback(feedback['answer'])['normalized_rms'], 0)
                     np.testing.assert_array_equal(simulate(q.residual(feedback['answer'])).counts, baseline)

@@ -106,6 +106,58 @@ class ApplicationTests(unittest.TestCase):
         recreated = self.app.dispatch('/api/frame', dict(wide_request, action='reveal'))
         self.assertEqual(recreated['feedback']['initial'], narrow['feedback']['initial'])
 
+    def test_hell_custom_lifecycle_export_and_invalid_new(self):
+        for level, amplitude in (('hell', 300), ('custom', 123.45), ('custom', 300), ('custom', 0.1)):
+            with self.subTest(level=level, amplitude=amplitude):
+                request = dict(self.request, difficulty=level, custom_amplitude=amplitude,
+                               max_order=5, term_count=20)
+                first = self.app.dispatch('/api/frame', dict(request, action='new'))
+                self.assertNotIn('feedback', first)
+                self.assertNotIn('initial', first['question'])
+                self.assertEqual(first['question']['amplitude'], amplitude)
+                revealed = self.app.dispatch('/api/frame', dict(request, action='reveal'))
+                feedback = revealed['feedback']
+                self.assertTrue(all(round(0.35*amplitude, 2) <= abs(v) <= amplitude
+                                    for v in feedback['initial'].values()))
+                # Invalid new settings must not replace even a revealed question.
+                for invalid in (None, True, '300', 0, 300.01):
+                    with self.assertRaises(ValueError):
+                        self.app.dispatch('/api/frame', dict(request, action='new', difficulty='custom', custom_amplitude=invalid))
+                # Invalid drafts are ignored by update/reveal/retry.
+                draft = dict(request, difficulty='custom', custom_amplitude=-1, seed=99)
+                unchanged = self.app.dispatch('/api/frame', dict(draft, action='reveal'))
+                self.assertEqual(unchanged['question'], first['question'])
+                self.assertEqual(unchanged['feedback'], feedback)
+                self.assertEqual(unchanged['image_png'], first['image_png'])
+                solved = self.app.dispatch('/api/frame', dict(draft, controls=feedback['answer']))
+                self.assertEqual(solved['feedback']['normalized_rms'], 0)
+                self.assertAlmostEqual(solved['metrics']['fwhm_mev'], 8, delta=0.2)
+                with np.load(io.BytesIO(self.app.dispatch('/api/export', {'session': self.token})), allow_pickle=False) as data:
+                    labels = json.loads(str(data['metadata_json']))['labels']
+                    self.assertEqual(labels['amplitude'], amplitude)
+                    self.assertEqual(labels['control_limit'], 300)
+                    self.assertEqual(labels['initial'], feedback['initial'])
+                    self.assertEqual(labels['generator_version'], GENERATOR_VERSION)
+                retried = self.app.dispatch('/api/frame', dict(draft, action='retry'))
+                self.assertEqual(retried['question'], first['question'])
+                self.assertEqual(retried['image_png'], first['image_png'])
+                self.assertNotIn('feedback', retried)
+
+    def test_300_controls_and_same_sign_practice_residual(self):
+        for value in (-300, 300):
+            free = self.app.dispatch('/api/frame', dict(self.request, mode='free', controls=dict.fromkeys(TERMS, value)))
+            self.assertEqual(free['controls'], dict.fromkeys(TERMS, value))
+        request = dict(self.request, difficulty='hell', max_order=5, term_count=20)
+        revealed = self.app.dispatch('/api/frame', dict(request, action='reveal'))
+        controls = {n: 300 if v > 0 else -300 for n, v in revealed['feedback']['initial'].items()}
+        strong = self.app.dispatch('/api/frame', dict(request, controls=controls))
+        self.assertTrue(all(300 < abs(v) <= 600 for v in strong['feedback']['residual'].values()))
+        self.assertGreater(strong['clipped_fraction'], 0.001)
+        self.assertIsNone(strong['metrics']['fwhm_mev'])
+        for value in (-300.01, 300.01):
+            with self.assertRaises(ValueError):
+                self.app.dispatch('/api/frame', dict(self.request, controls={'D05': value}))
+
     def test_bad_order_does_not_mutate_question(self):
         first = self.app.dispatch('/api/frame', dict(self.request, action='new'))
         for invalid in (0, 6, True, 5.0, '5', None):
@@ -174,6 +226,9 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(meta['max_order'], 5)
             self.assertEqual(meta['default_practice_order'], 3)
             self.assertEqual(meta['generator_version'], GENERATOR_VERSION)
+            self.assertEqual(meta['control_limit'], 300)
+            self.assertEqual(meta['difficulties'], {'easy': 20, 'medium': 45, 'hard': 90, 'hell': 300})
+            self.assertEqual(meta['custom_amplitude_min'], 0.1)
         with self.request('/api/session', {}) as response:
             token = json.load(response)['session']
         with self.request('/api/frame', {'session': token}) as response:
@@ -189,6 +244,21 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(response.headers['Content-Type'], 'application/octet-stream')
             with np.load(io.BytesIO(response.read()), allow_pickle=False) as data:
                 self.assertIn('counts', data)
+
+    def test_custom_http_validation(self):
+        with self.request('/api/session', {}) as response:
+            token = json.load(response)['session']
+        request = dict(session=token, mode='practice', action='new', difficulty='custom',
+                       custom_amplitude=300, max_order=5, term_count=20, config={'n_rays': 4096})
+        with self.request('/api/frame', request) as response:
+            self.assertEqual(json.load(response)['question']['amplitude'], 300)
+        for invalid in (None, True, '300', 0, 300.01):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request('/api/frame', dict(request, custom_amplitude=invalid))
+            try:
+                self.assertEqual(error.exception.code, 400)
+            finally:
+                error.exception.close()
 
     def test_local_only_and_no_arbitrary_files(self):
         self.assertEqual(self.server.server_address[0], '127.0.0.1')

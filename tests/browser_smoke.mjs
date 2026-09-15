@@ -129,6 +129,9 @@ try {
   await command('Emulation.setDeviceMetricsOverride', {width: 1600, height: 1150, deviceScaleFactor: 1, mobile: false});
   await command('Page.navigate', {url: `http://127.0.0.1:${port}/`}); await idle();
   assert.equal(await evaluate(`document.querySelectorAll('.coefficient').length`), 20);
+  assert.equal(await evaluate(`names.every(n => ['slide-','value-'].every(prefix => {
+    const el=document.getElementById(prefix+n);return el.min==='-300' && el.max==='300';
+  }) && document.getElementById('wheel-step-'+n).max==='300')`), true, 'all twenty controls and step editors share the new limit');
   assert.deepEqual(await evaluate(`names.map(n => document.getElementById('wheel-step-'+n).value)`), Array(20).fill('1'), 'all orders start with a 1 meV tuning step');
   assert.equal(await evaluate(`document.getElementById('practice').hidden && document.getElementById('timer-start').disabled && document.getElementById('timer-stop').disabled`), true, 'timer is unavailable in free mode');
   assert.equal(await evaluate(`document.querySelectorAll('.coefficient:not([hidden])').length`), 9);
@@ -228,17 +231,17 @@ try {
   for (let i=0;i<5;i++) await key('ArrowDown');
   assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '0.01');
   for (let i=0;i<7;i++) await key('ArrowUp');
-  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '120');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '300');
   assert.equal(await evaluate('selectedTerm'), 'D02', 'step keys never switch the active parameter');
   assert.equal(await evaluate('JSON.stringify(controls)'), selectionBefore);
   assert.equal(requests.filter(url => url.endsWith('/api/frame')).length, stepRequests, 'step keys do not simulate');
-  await wheelAt('spot', -120); assert.equal(await evaluate('controls.D02'), 120);
+  await wheelAt('spot', -120); assert.equal(await evaluate('controls.D02'), 300);
   await key('Enter'); assert.equal(await evaluate('wheelTarget'), null);
   await key('Enter', {autoRepeat:true}); assert.equal(await evaluate('wheelTarget'), null, 'held confirmation cannot restart');
-  await escape(); assert.equal(await evaluate('controls.D02'), 120, 'Enter commits');
+  await escape(); assert.equal(await evaluate('controls.D02'), 300, 'Enter commits');
   await key('Enter'); await wheelAt('spot', 120); await escape();
-  assert.equal(await evaluate('controls.D02'), 120, 'Escape restores keyboard-start snapshot');
-  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '120', 'Escape does not undo step settings');
+  assert.equal(await evaluate('controls.D02'), 300, 'Escape restores keyboard-start snapshot');
+  assert.equal(await evaluate(`document.getElementById('wheel-step-D02').value`), '300', 'Escape does not undo step settings');
   await change('wheel-step-D02', 0.1, 'input');
   await doubleClick('wheel-toggle-D02');
   await doubleClick('wheel-toggle-D02');
@@ -297,7 +300,7 @@ try {
   await key('Enter'); await key('ArrowRight'); await pointerClick('zero');
   assert.equal(await evaluate('controls.D10'), 8, 'single-click confirms keyboard adjustment without triggering zero');
   assert.equal(await evaluate('wheelTarget'), null);
-  for (const [start, arrow, bound] of [[119.99,'ArrowRight',120],[-119.99,'ArrowLeft',-120]]) {
+  for (const [start, arrow, bound] of [[299.99,'ArrowRight',300],[-299.99,'ArrowLeft',-300]]) {
     await change('value-D10', start, 'input'); await evaluate(`document.getElementById('row-D10').focus()`); await key('Enter');
     await key(arrow); await key(arrow, {autoRepeat:true});
     assert.equal(await evaluate('controls.D10'), bound, 'keyboard step clamps at the same wheel limit');
@@ -385,7 +388,7 @@ try {
   assert.equal(await evaluate('controls.D10'), 7.8);
   await escape();
   await change('wheel-step-D10', 0.25, 'input');
-  for (const [start, deltaY, limit] of [[119.99, -120, 120], [-119.99, 120, -120]]) {
+  for (const [start, deltaY, limit] of [[299.99, -120, 300], [-299.99, 120, -300]]) {
     await change('value-D10', start, 'input'); await doubleClick('wheel-toggle-D10');
     await wheelAt('spot', deltaY);
     assert.equal(await evaluate('controls.D10'), limit, 'coefficient bound');
@@ -698,9 +701,9 @@ try {
   // Every one of twenty active terms gets the selected amplitude range.
   await command('Emulation.setDeviceMetricsOverride', {width:1366,height:768,deviceScaleFactor:1,mobile:false});
   await evaluate('window.scrollTo(0,0)');
-  for (const [level,low,high] of [['easy',7,20],['medium',15.75,45],['hard',31.5,90]]) {
+  for (const [level,low,high] of [['easy',7,20],['medium',15.75,45],['hell',105,300],['hard',31.5,90]]) {
     await change('difficulty', level); await click('new-question'); await click('reveal');
-    assert.equal(await evaluate('lastFrame.question.generator_version'), 'eels-exercise-per-term-1');
+    assert.equal(await evaluate('lastFrame.question.generator_version'), 'eels-exercise-per-term-2');
     assert.equal(await evaluate(`Object.values(lastFrame.feedback.initial).every(v => Math.abs(v)>=${low} && Math.abs(v)<=${high})`), true, 'no shared budget dilutes twenty-term strength');
     if (level === 'medium') {
       assert.ok(await evaluate('lastFrame.metrics.rms_mev > 20'), 'seed 42 twenty-term medium is no longer near baseline');
@@ -717,6 +720,67 @@ try {
   assert.equal(await evaluate('JSON.stringify({question:lastFrame.question,feedback:lastFrame.feedback})'), strongQuestion, 'widening the field does not change question, answer or score');
   assert.ok(await evaluate('lastFrame.clipped_fraction < 0.001'));
   assert.doesNotMatch(await evaluate(`document.getElementById('warnings').textContent`), /扩大能量视野/);
+  // Custom amplitude is a draft until new; invalid drafts cannot block an
+  // active question, reset tuning/timer on failed new, or leak into retry.
+  assert.deepEqual(await evaluate(`Array.from(document.getElementById('difficulty').options, o => o.textContent)`), ['初级','中级','高级','地狱难度','自定义难度']);
+  assert.equal(await evaluate(`document.getElementById('custom-difficulty').hidden`), true);
+  const beforeCustomDraft = await evaluate(practiceState);
+  const beforeCustomRequests = frameRequestCount();
+  await change('difficulty', 'custom'); await change('custom-amplitude', 123.45, 'input');
+  assert.equal(await evaluate(`document.getElementById('custom-difficulty').hidden`), false);
+  assert.equal(await evaluate(practiceState), beforeCustomDraft);
+  assert.equal(frameRequestCount(), beforeCustomRequests);
+  for (const amplitude of [123.45, 300, 0.1]) {
+    await change('custom-amplitude', amplitude, 'input'); await click('new-question');
+    assert.equal(await evaluate('lastFrame.question.amplitude'), amplitude);
+    assert.equal(await evaluate('lastFrame.question.difficulty'), 'custom');
+    assert.equal(await evaluate('Boolean(lastFrame.feedback)'), false);
+    assert.match(await evaluate(`document.getElementById('question-info').textContent`), /自定义难度/);
+    await click('reveal');
+    assert.equal(await evaluate(`Object.values(lastFrame.feedback.initial).every(v => Math.abs(v)>=${Math.round(0.35*amplitude*100)/100} && Math.abs(v)<=${amplitude})`), true);
+    const customQuestion = await evaluate('JSON.stringify(lastFrame.question)');
+    const customInitial = await evaluate('JSON.stringify(lastFrame.feedback.initial)');
+    await evaluate(`document.querySelectorAll('#answer-rows tr').forEach(row => {const el=document.getElementById('value-'+row.cells[0].textContent);el.value=Number(row.cells[3].textContent);el.dispatchEvent(new Event('input', {bubbles:true}));})`);
+    await idle(); assert.equal(await evaluate('lastFrame.feedback.normalized_rms'), 0);
+    assert.ok(Math.abs(await evaluate('lastFrame.metrics.fwhm_mev')-8)<0.2);
+    await click('timer-start');
+    const startedAt = await evaluate('practiceStartedAt');
+    const solvedCustom = await evaluate(practiceState);
+    for (const invalid of ['', 0, -1, 300.01, 0.015]) {
+      await change('custom-amplitude', invalid, 'input');
+      const beforeInvalid = frameRequestCount();
+      await evaluate(`document.getElementById('new-question').click()`);
+      assert.match(await evaluate(`document.getElementById('error').textContent`), /请检查设置/);
+      assert.equal(frameRequestCount(), beforeInvalid);
+      assert.equal(await evaluate(practiceState), solvedCustom);
+      assert.equal(await evaluate('practiceStartedAt'), startedAt);
+      // Existing question operations still work despite the invalid draft.
+      await click('reveal'); await click('reveal');
+    }
+    await click('retry'); await assertTimerReset(); await click('reveal');
+    assert.equal(await evaluate('JSON.stringify(lastFrame.question)'), customQuestion);
+    assert.equal(await evaluate('JSON.stringify(lastFrame.feedback.initial)'), customInitial);
+    await change('custom-amplitude', amplitude, 'input');
+  }
+  // Custom editor and the original nine controls remain usable on short and
+  // narrow screens. Capture the actual new option/editor, not just DOM labels.
+  await pointerClick('page-3');
+  for (const [width,height] of [[1280,600],[390,844]]) {
+    await command('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.querySelector('.workbench').scrollIntoView({block:'start'})`);
+    await assertWorkbenchVisible('custom difficulty layout');
+    await evaluate('window.scrollTo(0,0)');
+    assert.equal(await evaluate(`(() => {const r=document.getElementById('custom-amplitude').getBoundingClientRect();return r.width>0 && r.top>=0 && r.bottom<=innerHeight && document.documentElement.scrollWidth<=innerWidth;})()`), true);
+  }
+  await command('Emulation.setDeviceMetricsOverride', {width:1366,height:768,deviceScaleFactor:1,mobile:false});
+  await evaluate('window.scrollTo(0,0)');
+  const customShot = await command('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+  await writeFile(join(root, artifactDirectory, 'difficulty-custom.png'), Buffer.from(customShot.data,'base64'));
+  await change('difficulty', 'hell'); await click('new-question'); await click('reveal');
+  assert.match(await evaluate(`document.getElementById('question-info').textContent`), /地狱难度/);
+  assert.equal(await evaluate(`document.getElementById('custom-difficulty').hidden`), true);
+  await evaluate(`document.querySelectorAll('#answer-rows tr').forEach(row => {const el=document.getElementById('value-'+row.cells[0].textContent);el.value=Number(row.cells[3].textContent);el.dispatchEvent(new Event('input', {bubbles:true}));})`);
+  await idle(); assert.equal(await evaluate('lastFrame.feedback.normalized_rms'), 0);
   // Refresh clears page-local stopwatch and restores every coefficient step.
   await pointerClick('timer-start');
   await command('Page.navigate', {url:`http://127.0.0.1:${port}/`}); await idle();
@@ -724,7 +788,7 @@ try {
   assert.deepEqual(await evaluate(`names.map(n => document.getElementById('wheel-step-'+n).value)`), Array(20).fill('1'));
   // A refreshed frontend must reject both nine-term and twenty-term backends
   // still using the old shared-budget generator, with an actionable message.
-  for (const legacyKind of ['nine-term', 'shared-budget']) {
+  for (const legacyKind of ['nine-term', 'shared-budget', 'per-term-1', 'old-limit']) {
     const beforeOldBackend = frameRequestCount();
     const oldMeta = await command('Page.addScriptToEvaluateOnNewDocument', {source: `
       const nativeFetch = window.fetch;
@@ -732,7 +796,9 @@ try {
         const response = await nativeFetch(...args);
         if (args[0] !== '/api/meta') return response;
         const meta = await response.json();
-        delete meta.generator_version;
+        if (${JSON.stringify(legacyKind)} === 'old-limit') meta.control_limit=120;
+        else if (${JSON.stringify(legacyKind)} === 'per-term-1') meta.generator_version='eels-exercise-per-term-1';
+        else delete meta.generator_version;
         if (${JSON.stringify(legacyKind)} === 'nine-term') {
           meta.terms = meta.terms.slice(0,9);
           delete meta.max_order; delete meta.powers; delete meta.default_practice_order;
@@ -750,8 +816,8 @@ try {
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
     drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, readable_layouts: readableLayouts, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
-    checks: ['all twenty initial steps are 1 meV', 'practice timer start/stop/restart and duplicate start', 'elapsed clock jump and hour/minute formatting', 'timer reset on new/retry/mode/refresh', 'timer does not simulate or alter question', 'timer respects tuning confirmation click', 'per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
-    screenshots: [`${artifactDirectory}/difficulty-medium-20.png`, `${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
+    checks: ['all twenty control/step limits are 300', 'hell and custom difficulty bounds and exact compensation', 'custom drafts and invalid new preserve question, controls and timer', 'custom short/narrow layouts', 'old 120-limit backend rejected', 'all twenty initial steps are 1 meV', 'practice timer start/stop/restart and duplicate start', 'elapsed clock jump and hour/minute formatting', 'timer reset on new/retry/mode/refresh', 'timer does not simulate or alter question', 'timer respects tuning confirmation click', 'per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    screenshots: [`${artifactDirectory}/difficulty-custom.png`, `${artifactDirectory}/difficulty-medium-20.png`, `${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();
   for (const child of [browser, service]) {

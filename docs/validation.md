@@ -2,6 +2,31 @@
 
 当前快捷键见「截图风格、显示顺序与键盘滚轮会话（2026-09-14）」及末节「滚轮模式左右键单步调整」；配色以「恢复原有深色配色」为准。前面“单击按钮启用”、粉色界面等均为保留的历史记录。
 
+## 参数 ±300、地狱/自定义难度（2026-09-15）
+
+本轮是本地源码与离线软件验证，**未重新构建或部署 Windows EXE**。旧包和 raw 原件未改；没有安装依赖、连接仪器或操作用户正在运行的服务。历史 ±120、旧难度/评分尺度的记录保持原状；当前需求见 `docs/requirements.md` 的同日小节。
+
+实现路径：`src/eels_sim/model.py`（统一 ±300 控件限值）、`training.py`（地狱/自定义、输入校验、出题版本 2、幅度/评分标签）、`server.py`（API/元数据）；`src/eels_sim/web/{app.js,index.html,style.css}`（新选项/自定义上限、草稿处理、旧后端检查及提示）。测试改动：`tests/{test_model.py,test_server.py,browser_smoke.mjs}`；说明更新：`README.md`、`docs/requirements.md`、本文件。
+
+实际执行：
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/limits-difficulty-20260915
+git diff --check
+```
+
+- Python **52 项全部通过，11.308 s**，无跳过。覆盖全部 20 项 ±300 接受/越界拒绝、±600 有效残余及裁切、地狱各阶各项数幅度、旧三级固定种子不变、自定义复现/精确补偿/场景独立性、非法输入、草稿与重试、NPZ 幅度/评分分母标签、HTTP 400；同时重跑旧模型、legacy、HTTP 和便携生命周期/打包模拟测试。打包测试中的 Linux 构建拒绝提示是预期断言，不是实际构建尝试。
+- 已有 **Chrome 149.0.7827.55 完整浏览器回归 PASS**：滑块/数值/步长元数据、键盘及滚轮 ±300 限幅、地狱和自定义 20 项精确补偿、自定义 A=0.1/123.45/300、非法新题不发请求且保留题目/控件/计时、无效草稿不阻碍揭示或重试。新前端拒绝旧出题版本和 120 限值后端。
+- 同时重跑连续拖动、分页、计时、确认/撤销和迟到帧保护、大屏字号/高 DPI、桌面 1280×600 至 3072×1728、窄屏 1024×768 / 720×720 / 390×844；新增自定义设置的 1280×600 / 390×844 布局检查。零系数默认 FWHM 显示 **8.002 meV**。无捕获的 JS 异常或 UI 外部资源请求。
+- 两项 JS 语法检查及 `git diff --check` 通过。本轮上述测试首轮均通过，无失败重试。
+
+证据位于 **`processed/validation/limits-difficulty-20260915/`**：`unit-http-tests.txt`、`browser-test.json`、`browser-test.stderr` 及报告列出的截图（新增 `difficulty-custom.png`）。已实际读取自定义截图，确认选项、上限输入、九项控件和双图显示；不是仅依据 DOM 推测截图内容。浏览器测试仅启停自己的临时本地服务/私有浏览器，profile `/tmp/eels-browser-okg28Z` 保留，不复用个人资料。
+
+限制：未重新运行 Windows 二进制/默认浏览器验收、未打包新 ZIP、未进行硬件验证；用户需重启源码后端并强制刷新才能使用本次更新。现有 Windows 包仍是历史版本。
+
 ## 环境与范围
 
 - 检查日期：2026-09-12（环境时区 +08:00）；执行者：AI 编码助手。

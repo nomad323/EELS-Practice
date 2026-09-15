@@ -8,6 +8,7 @@ const pageSelection = {};
 // Presentation order only: preserve the model/export basis and seeded exercises.
 const tuneUpOrder = ['D10', 'D01', 'D02', 'D20', 'D11'];
 const tuneUpLabels = {D10: 'FX', D01: 'FY', D02: 'C', D20: 'D', D11: 'SY'};
+const difficultyLabels = {easy: '初级', medium: '中级', hard: '高级', hell: '地狱难度', custom: '自定义难度'};
 let lastFrame = null, lastImage = null, running = false, dirty = false, pendingAction = "update";
 let revision = 0, contextRevision = 0, timer = null, lockedVmax = null, failed = false;
 let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false, suppressDoubleClick = false;
@@ -126,7 +127,16 @@ function updateTermChoices() {
   $("term-count").replaceChildren(...choices.map(n => new Option(n === total ? `全部 ${n} 项` : `${n} 项`, String(n))));
   $("term-count").value = String(choices.includes(previous) ? previous : total);
 }
+function customAmplitude() {
+  return $("difficulty").value === "custom" ? number("custom-amplitude") : undefined;
+}
+function updateDifficulty() {
+  $("custom-difficulty").hidden = $("difficulty").value !== "custom";
+}
 function newQuestion() {
+  // Reject invalid draft settings before clearing the current tuning/timer.
+  try { customAmplitude(); }
+  catch (error) { $("error").textContent = error.message; return; }
   finishWheel(); activeOrder = number("max-order"); resetPracticeTimer(); updatePages(); zeroControls(); request("new");
 }
 function zeroControls() { controls = Object.fromEntries(names.map(n => [n, 0])); syncControls(); }
@@ -164,7 +174,7 @@ function finishWheel(rollback = false) {
 function wheelNote(name) {
   const step = $(`wheel-step-${name}`);
   const valid = step.value !== "" && step.checkValidity();
-  const text = valid ? "双击双箭头或 Enter 开始；滚轮或 ←/→ 调系数（左减、右增一步），↑ 步长 ×10，↓ 步长 ÷10；Enter / 单击确认，Esc 撤销。" : "步长须为 0.01～120 的数值，精度 0.01；当前不执行滚轮调节。";
+  const text = valid ? "双击双箭头或 Enter 开始；滚轮或 ←/→ 调系数（左减、右增一步），↑ 步长 ×10，↓ 步长 ÷10；Enter / 单击确认，Esc 撤销。" : `步长须为 0.01～${meta.control_limit} 的数值，精度 0.01；当前不执行滚轮调节。`;
   $(`wheel-note-${name}`).textContent = valid && wheelTarget !== name ? "" : text;
   $(`wheel-toggle-${name}`).title = text;
   step.title = text;
@@ -264,6 +274,9 @@ async function pump() {
       const data = {session, mode: $("mode").value, action, controls: {...controls}, config: scene(),
         seed: number("seed"), difficulty: $("difficulty").value, term_count: number("term-count"), max_order: number("max-order"),
         gamma: number("gamma"), vmax: $("lock-intensity").checked ? lockedVmax : null};
+      // Difficulty editors are drafts. Invalid custom input must not block
+      // tuning/reveal/retry of an existing question, or free exploration.
+      if (data.mode === "practice" && (action === "new" || !lastFrame?.question)) data.custom_amplitude = customAmplitude();
       const response = await post("/api/frame", data);
       const image = new Image(); image.src = `data:image/png;base64,${response.image_png}`; await image.decode();
       // A completed intermediate frame is useful while dragging. Only a new
@@ -359,7 +372,8 @@ function render(frame, image) {
   if (!frame.feedback) { $("answer-rows").replaceChildren(); $("score").textContent = ""; }
   $("reveal").textContent = frame.feedback ? "隐藏答案" : "查看答案 / 差距";
   if (frame.question) {
-    $("question-info").textContent = `本题：最高 ${frame.question.max_order} 阶 · ${frame.question.term_count} 项 · 种子 ${frame.question.seed} · ${frame.question.difficulty}。更改设置后需重新出题。`;
+    const q = frame.question;
+    $("question-info").textContent = `本题：最高 ${q.max_order} 阶 · ${q.term_count} 项 · 种子 ${q.seed} · ${difficultyLabels[q.difficulty]} · 单项上限 ${q.amplitude} meV。更改设置后需重新出题。`;
     if (activeOrder !== frame.question.max_order) { activeOrder = frame.question.max_order; updatePages(); }
   }
   if (frame.feedback) {
@@ -436,6 +450,7 @@ function bind() {
   window.addEventListener("blur", () => finishWheel());
   [3, 4, 5].forEach(page => $(`page-${page}`).addEventListener("click", () => setPage(page)));
   $("max-order").addEventListener("change", () => { finishWheel(); updateTermChoices(); });
+  $("difficulty").addEventListener("change", updateDifficulty);
   $("timer-start").addEventListener("click", startPracticeTimer);
   $("timer-stop").addEventListener("click", stopPracticeTimer);
   $("mode").addEventListener("change", () => {
@@ -471,7 +486,7 @@ async function init() {
   try {
     const response = await fetch("/api/meta"); if (!response.ok) throw new Error("无法加载本地模型配置");
     meta = await response.json();
-    if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20 || meta.generator_version !== "eels-exercise-per-term-1") throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
+    if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20 || meta.generator_version !== "eels-exercise-per-term-2" || meta.control_limit !== 300 || meta.difficulties?.hell !== 300 || meta.custom_amplitude_min !== 0.1) throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
     names = [...tuneUpOrder, ...meta.terms.filter(n => !tuneUpOrder.includes(n))];
     const powers = Object.fromEntries(meta.terms.map((n, i) => [n, meta.powers[i]]));
     const superscript = ["", "", "²", "³", "⁴", "⁵"];
@@ -483,7 +498,9 @@ async function init() {
     controls = Object.fromEntries(names.map(n => [n, 0]));
     activeOrder = meta.max_order; $("max-order").value = String(meta.default_practice_order); updateTermChoices();
     session = (await post("/api/session", {})).session;
-    buildControls(); bind();
+    $("custom-amplitude").min = String(meta.custom_amplitude_min);
+    $("custom-amplitude").max = String(meta.control_limit);
+    buildControls(); bind(); updateDifficulty();
     const plotObserver = new ResizeObserver(redrawPlots);
     [$("spot"), $("spectrum")].forEach(canvas => plotObserver.observe(canvas));
     window.addEventListener("resize", redrawPlots);

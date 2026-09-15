@@ -34,6 +34,7 @@ input[type=range]{width:100%;accent-color:#e2e5e9;min-width:0;height:1.333333rem
 #practice-time{display:inline-block;min-width:7.5ch;font-variant-numeric:tabular-nums;white-space:nowrap}
 .practice-options button{font-size:.916667rem;padding:.333333rem .5rem}
 #seed{width:8.166667rem}
+#custom-amplitude{width:5.5rem}
 #question-info{margin:.333333rem 0 0;font-size:.833333rem}
 .workbench{display:grid;grid-template-columns:41.666667rem minmax(0,1fr);gap:.833333rem;align-items:start;scroll-margin-top:var(--header-height)}
 .coefficient-pages{display:flex;gap:.333333rem}
