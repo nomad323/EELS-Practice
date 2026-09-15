@@ -228,7 +228,10 @@ def simulate(values=None, config=None):
     basis, v = _pupil(config.n_rays, config.sample_seed, config.pupil_x, config.pupil_y, config.angular_slit_half)
     shifts = np.zeros(len(v))
     for name, term in zip(TERMS, basis):
-        shifts += c[name] * term
+        # Keep the same accumulation order, but do not stream an entire cached
+        # ray array for inactive coefficients (including off-page high orders).
+        if c[name] != 0:
+            shifts += c[name] * term
     energy = np.linspace(-config.energy_half_range_mev, config.energy_half_range_mev, config.energy_bins)
     y = np.linspace(-1.6, 1.6, config.y_bins)
     de, dy = energy[1]-energy[0], y[1]-y[0]

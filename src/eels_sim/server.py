@@ -123,6 +123,27 @@ class Application:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "EELSLocal/1.0"
+    protocol_version = "HTTP/1.1"
+    # Reuse loopback connections instead of reconnecting/thread-starting for
+    # every slider update. Avoid Nagle/delayed-ACK stalls on separate headers
+    # and body writes; idle keep-alive handlers must not linger indefinitely.
+    disable_nagle_algorithm = True
+    timeout = 30
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        if self.request_version == "HTTP/0.9":
+            return True  # Headerless requests are rejected by the Host gate.
+        lengths = self.headers.get_all("Content-Length", [])
+        # This API accepts fixed-length JSON POSTs and bodyless GETs only.
+        # Reject ambiguous/unread bodies before reusing a persistent stream,
+        # including the desktop GET endpoint which subclasses this handler.
+        if ("Transfer-Encoding" in self.headers or len(lengths) > 1
+                or self.command == "GET" and lengths not in ([], ["0"])):
+            self.json_response(400, {"error": "不支持的请求体长度或传输编码"})
+            return False
+        return True
 
     def _local_request(self):
         port = self.server.server_port
@@ -133,7 +154,13 @@ class Handler(BaseHTTPRequestHandler):
         return (origin is None or origin in {f"http://{h}" for h in hosts}) and self.headers.get("Sec-Fetch-Site") != "cross-site"
 
     def send_content(self, status, body, content_type):
+        # Errors can reject a POST before consuming its body. Never interpret
+        # those unread bytes as the next request on a keep-alive connection.
+        if status >= 400:
+            self.close_connection = True
         self.send_response(status)
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")

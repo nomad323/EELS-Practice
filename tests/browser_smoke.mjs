@@ -148,6 +148,47 @@ try {
   assert.equal(await evaluate(`JSON.stringify(lastFrame.spectrum)`), beforeGamma);
   await click('zero');
   assert.equal(Number(await evaluate(`document.getElementById('fwhm').textContent`)), baseline);
+  // Network work must not wait for requestAnimationFrame (which browsers can
+  // delay/throttle independently of a ready local backend). Hold fetches to
+  // deterministically verify synchronous coalescing and the next latest input.
+  for (const mode of ['free', 'practice']) {
+    await change('mode', mode);
+    await evaluate(`(() => {
+      window.__probeRAF = window.requestAnimationFrame; window.__probeFetch = window.fetch;
+      window.__probeSent = []; window.__probeRelease = [];
+      window.requestAnimationFrame = () => 0; // Deliberately never invoke it.
+      window.fetch = async (...args) => {
+        if (args[0] !== '/api/frame') return window.__probeFetch(...args);
+        window.__probeSent.push(JSON.parse(args[1].body));
+        await new Promise(resolve => window.__probeRelease.push(resolve));
+        return window.__probeFetch(...args);
+      };
+      for (const value of [1,2,3]) {
+        const el=document.getElementById('value-D01'); el.value=value;
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+      }
+    })()`);
+    try {
+      await waitFor(() => evaluate('window.__probeSent.length === 1'), 'send without animation-frame callback');
+      assert.equal(await evaluate('window.__probeSent[0].controls.D01'), 3, 'same-task edits coalesce to latest value');
+      await evaluate(`for (const value of [4,5]) {
+        const el=document.getElementById('slide-D01'); el.value=value;
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+      }`);
+      assert.equal(await evaluate('window.__probeSent.length'), 1, 'only one request in flight');
+      await evaluate('window.__probeRelease.shift()()');
+      await waitFor(() => evaluate('window.__probeSent.length === 2'), 'follow-up without animation-frame callback');
+      assert.equal(await evaluate('window.__probeSent[1].controls.D01'), 5);
+      assert.equal(await evaluate('controls.D01'), 5, 'intermediate response does not roll back controls');
+      await evaluate('window.__probeRelease.shift()()'); await idle();
+      assert.equal(await evaluate('lastFrame.controls.D01'), 5);
+      assert.match(await evaluate(`document.getElementById('status').title`), /输入到绘图.*请求\/传输\/JSON.*后端/);
+    } finally {
+      await evaluate(`window.requestAnimationFrame=window.__probeRAF; window.fetch=window.__probeFetch;
+        window.__probeRelease.splice(0).forEach(resolve=>resolve())`);
+    }
+  }
+  await change('mode', 'free'); await click('zero');
   // Keep moving with the button held down. Delay responses to expose starvation
   // and accidental rollback even when inputs arrive faster than a frame returns.
   await evaluate(`(() => {
@@ -816,7 +857,7 @@ try {
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
     drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, readable_layouts: readableLayouts, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
-    checks: ['all twenty control/step limits are 300', 'hell and custom difficulty bounds and exact compensation', 'custom drafts and invalid new preserve question, controls and timer', 'custom short/narrow layouts', 'old 120-limit backend rejected', 'all twenty initial steps are 1 meV', 'practice timer start/stop/restart and duplicate start', 'elapsed clock jump and hour/minute formatting', 'timer reset on new/retry/mode/refresh', 'timer does not simulate or alter question', 'timer respects tuning confirmation click', 'per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    checks: ['network starts and follows latest input without animation-frame gating in both modes', 'synchronous input coalescing with one in-flight request', 'full-path timing tooltip', 'all twenty control/step limits are 300', 'hell and custom difficulty bounds and exact compensation', 'custom drafts and invalid new preserve question, controls and timer', 'custom short/narrow layouts', 'old 120-limit backend rejected', 'all twenty initial steps are 1 meV', 'practice timer start/stop/restart and duplicate start', 'elapsed clock jump and hour/minute formatting', 'timer reset on new/retry/mode/refresh', 'timer does not simulate or alter question', 'timer respects tuning confirmation click', 'per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
     screenshots: [`${artifactDirectory}/difficulty-custom.png`, `${artifactDirectory}/difficulty-medium-20.png`, `${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();

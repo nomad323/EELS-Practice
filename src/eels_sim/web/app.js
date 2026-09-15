@@ -10,7 +10,8 @@ const tuneUpOrder = ['D10', 'D01', 'D02', 'D20', 'D11'];
 const tuneUpLabels = {D10: 'FX', D01: 'FY', D02: 'C', D20: 'D', D11: 'SY'};
 const difficultyLabels = {easy: '初级', medium: '中级', hard: '高级', hell: '地狱难度', custom: '自定义难度'};
 let lastFrame = null, lastImage = null, running = false, dirty = false, pendingAction = "update";
-let revision = 0, contextRevision = 0, timer = null, lockedVmax = null, failed = false;
+let revision = 0, contextRevision = 0, pumpQueued = false, lockedVmax = null, failed = false;
+let latestInputAt = 0;
 let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false, suppressDoubleClick = false;
 let practiceStartedAt = null, practiceElapsed = 0, practiceInterval = null;
 
@@ -242,17 +243,21 @@ function buildControls() {
   updatePages();
 }
 function schedule() {
+  latestInputAt = performance.now();
   revision++; dirty = true; updatePageBadges();
   $("status").textContent = "实时更新中…";
   buttonState();
-  // Coalesce only within a browser frame; continuous input never restarts a
-  // trailing debounce. An in-flight request will pick up the latest values.
-  if (!running && timer === null) timer = requestAnimationFrame(() => { timer = null; pump(); });
+  // Coalesce synchronous edits, without waiting a display refresh before
+  // starting network work. In-flight updates still retain only the latest input.
+  if (!running && !pumpQueued) {
+    pumpQueued = true;
+    queueMicrotask(() => { pumpQueued = false; pump(); });
+  }
 }
 function request(action = "update") {
   // Explicit mode/scene/actions end tuning before changing its context.
   finishWheel();
-  if (timer !== null) { cancelAnimationFrame(timer); timer = null; }
+  latestInputAt = performance.now();
   revision++; contextRevision++; dirty = true;
   if (action !== "update") pendingAction = action;
   pump();
@@ -268,7 +273,7 @@ async function pump() {
   running = true; buttonState();
   while (dirty) {
     dirty = false;
-    const version = revision, context = contextRevision, action = pendingAction; pendingAction = "update";
+    const version = revision, context = contextRevision, action = pendingAction, inputAt = latestInputAt; pendingAction = "update";
     $("status").textContent = lastFrame ? "实时更新中…" : "计算中…";
     try {
       const data = {session, mode: $("mode").value, action, controls: {...controls}, config: scene(),
@@ -277,7 +282,10 @@ async function pump() {
       // Difficulty editors are drafts. Invalid custom input must not block
       // tuning/reveal/retry of an existing question, or free exploration.
       if (data.mode === "practice" && (action === "new" || !lastFrame?.question)) data.custom_amplitude = customAmplitude();
+      const sentAt = performance.now();
       const response = await post("/api/frame", data);
+      const receivedAt = performance.now();
+      if (context !== contextRevision) continue; // No decoding work for obsolete contexts.
       const image = new Image(); image.src = `data:image/png;base64,${response.image_png}`; await image.decode();
       // A completed intermediate frame is useful while dragging. Only a new
       // mode/question/scene/action invalidates its context. Never write an older
@@ -287,6 +295,9 @@ async function pump() {
         lastFrame = response; lastImage = image;
         if ($("lock-intensity").checked && lockedVmax === null) lockedVmax = response.display_vmax;
         render(response, image); failed = false; $("error").textContent = "";
+        // The visible ms remains backend time; expose the full path separately
+        // so browser/transport delay is not mistaken for simulation time.
+        $("status").title = `本帧输入到绘图 ${(performance.now()-inputAt).toFixed(1)} ms；请求/传输/JSON ${(receivedAt-sentAt).toFixed(1)} ms（含后端 ${response.elapsed_ms.toFixed(1)} ms）。不含屏幕实际呈现延迟。`;
         if (version !== revision) $("status").textContent += " · 跟随调节中";
         document.body.dataset.ready = "true";
       }
@@ -296,9 +307,9 @@ async function pump() {
         $("status").textContent = "未更新 · 如有图像则为上一帧";
       }
     }
-    // Let the browser paint, then compute one latest snapshot, not a backlog of
-    // mouse events. The image, spectrum, width and feedback always share a frame.
-    if (dirty) await new Promise(resolve => requestAnimationFrame(resolve));
+    // Start the next latest snapshot immediately. Awaiting fetch/decode yields
+    // to the browser; an extra animation-frame wait only adds round-trip delay.
+    // The image, spectrum, width and feedback still always share one frame.
   }
   running = false; buttonState();
 }

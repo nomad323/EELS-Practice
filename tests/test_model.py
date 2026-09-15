@@ -4,13 +4,14 @@ import io
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
 
 from eels_sim import Config, MODEL_VERSION, POWERS, TERMS, coefficients, polynomial, simulate, terms_through
 from eels_sim import legacy
-from eels_sim.model import CONTROL_LIMIT, FWHM_FACTOR, measure_spectrum
+from eels_sim.model import CONTROL_LIMIT, FWHM_FACTOR, _pupil, measure_spectrum
 from eels_sim.presentation import export_npz, grayscale, png_bytes
 from eels_sim.training import GENERATOR_VERSION, checked_controls, new_exercise
 
@@ -61,6 +62,31 @@ class PolynomialTests(unittest.TestCase):
 
 
 class ModelTests(unittest.TestCase):
+    def test_inactive_terms_are_not_multiplied_and_sparse_output_is_unchanged(self):
+        class InactiveTerm:
+            def __rmul__(self, other):
+                raise AssertionError('inactive ray arrays must not be multiplied')
+
+        config = Config(n_rays=4096)
+        basis, v = _pupil(config.n_rays, config.sample_seed, config.pupil_x,
+                          config.pupil_y, config.angular_slit_half)
+        for values in ({}, {'D01': 40, 'D22': -3, 'D05': 7, 'D10': -0.0}):
+            dense = coefficients(values)
+            # Reference the old dense accumulation, including every zero term.
+            shifts = np.zeros(len(v))
+            for name, term in zip(TERMS, basis):
+                shifts += dense[name] * term
+            collapsed = np.zeros_like(basis)
+            collapsed[0] = shifts
+            with patch('eels_sim.model._pupil', return_value=(collapsed, v)):
+                expected = simulate({'D10': 1}, config)
+            guarded = [term if dense[name] else InactiveTerm() for name, term in zip(TERMS, basis)]
+            with patch('eels_sim.model._pupil', return_value=(guarded, v)):
+                actual = simulate(values, config)
+            np.testing.assert_array_equal(actual.counts, expected.counts)
+            np.testing.assert_array_equal(actual.spectrum, expected.spectrum)
+            self.assertEqual(actual.metrics, expected.metrics)
+
     def test_default_8_mev_and_count_conservation(self):
         r = simulate()
         self.assertAlmostEqual(r.metrics['fwhm_mev'], 8, delta=0.2)
@@ -285,6 +311,21 @@ class TrainingTests(unittest.TestCase):
 
 
 class DisplayExportTests(unittest.TestCase):
+    def test_fast_png_is_pixel_identical_to_default_compression(self):
+        for config in (Config(n_rays=4096), Config(n_rays=4096, poisson=True, background_per_pixel=2)):
+            counts = simulate(new_exercise(42, 'hell', 20, max_order=5).initial, config).counts
+            before = counts.copy()
+            for gamma, vmax in ((0.5, None), (1.2, 100)):
+                pixels, maximum = grayscale(counts, gamma, vmax)
+                reference = io.BytesIO()
+                Image.fromarray(np.flipud(pixels)).save(reference, format='PNG')
+                fast, actual_maximum = png_bytes(counts, gamma, vmax)
+                self.assertEqual(actual_maximum, maximum)
+                with Image.open(io.BytesIO(fast)) as image, Image.open(io.BytesIO(reference.getvalue())) as original:
+                    self.assertEqual(image.mode, 'L')
+                    np.testing.assert_array_equal(np.asarray(image), np.asarray(original))
+                np.testing.assert_array_equal(counts, before)
+
     def test_grayscale_direction_orientation_and_no_mutation(self):
         a = np.array([[0., 5.], [2., 10.]])
         before = a.copy()

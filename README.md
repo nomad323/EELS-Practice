@@ -6,6 +6,14 @@
 
 全部 20 项系数及补偿范围扩大到 **±300 meV**，滚轮/键盘步长上限同步为 300；练习新增 **地狱难度**（单项绝对值 105–300）和 **自定义难度**（自行设置单项上限 0.1–300）。场景参数、种子、采样和视野范围不变。源码用户先按需导出，再自行停止旧后端、重新运行 `python3 run.py`（保留自选端口）并 Ctrl+F5。**以下已有 Windows ZIP 尚不含此更新，本轮未重新打包或部署。**
 
+## 参数更新延迟修复（2026-09-15）
+
+已优化所有模式共用的更新路径：不再等待下一次屏幕刷新才发请求；HTTP/1.1 复用连接并启用 TCP_NODELAY；PNG 使用快速无损压缩；跳过零系数的光线数组运算。仍然只允许一个模拟请求在途、只保留下一次最新输入，保留旧帧/撤销保护。**没有降低采样质量、扩大缓存或改变题目/计数/谱线**；PNG 压缩字节和文件大小会变化，像素不变。
+
+Linux 本地 Chromium 检查中，标准自由模式输入到 Canvas 绘图中位数 **29.4 → 20.8 ms**，高质量地狱练习 **56.1 → 44.3 ms**；不是用户 Windows→WSL 路径的实测或固定帧率保证。原状态栏的 ms 仍是后端耗时，鼠标悬停可查看本帧输入到绘图及请求/传输/JSON 的完整耗时，便于区分计算和浏览器/转发延迟。检查、限制及回退见 [验证记录](docs/validation.md#参数更新延迟修复2026-09-15)。
+
+**使用本修复需先按需导出，自行停止并重启源码服务 `python3 run.py`（保留自选端口），再 Ctrl+F5。** 未操作你正在运行的实例，未重打 Windows EXE/ZIP；旧便携包不会自动更新。
+
 ## 启动
 
 ### Windows 便携版（已生成 Windows x64 成品）
@@ -151,6 +159,7 @@ with np.load('eels-sample.npz', allow_pickle=False) as sample:
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 node --check src/eels_sim/web/app.js            # 可选，需要已有 Node
 node tests/browser_smoke.mjs /path/to/chrome   # 可选，需要 Node ≥22 和已有 Chromium
+node tests/browser_latency.mjs /path/to/chrome # 可选，独立服务/浏览器；输出分阶段延迟 JSON
 node tests/desktop_browser_smoke.mjs /path/to/chrome  # Linux 离线便携生命周期检查
 python3 run_desktop.py --self-test /chosen/path/report.json  # 不打开浏览器；只保存离线自检报告
 ```

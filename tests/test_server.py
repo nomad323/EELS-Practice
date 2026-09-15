@@ -1,5 +1,7 @@
+import http.client
 import io
 import json
+import socket
 import threading
 import unittest
 import urllib.error
@@ -8,7 +10,7 @@ import urllib.request
 import numpy as np
 
 from eels_sim.model import TERMS, coefficients
-from eels_sim.server import Application, LocalServer
+from eels_sim.server import Application, Handler, LocalServer
 from eels_sim.training import GENERATOR_VERSION
 
 
@@ -244,6 +246,99 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(response.headers['Content-Type'], 'application/octet-stream')
             with np.load(io.BytesIO(response.read()), allow_pickle=False) as data:
                 self.assertIn('counts', data)
+
+    def test_persistent_connection_for_static_frames_and_export(self):
+        client = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        self.addCleanup(client.close)
+        client.connect()
+        connection = client.sock
+
+        def request(method, path, data=None):
+            body = None if data is None else json.dumps(data)
+            client.request(method, path, body, {'Content-Type': 'application/json'})
+            response = client.getresponse()
+            self.assertEqual(response.version, 11)
+            self.assertEqual(response.status, 200)
+            self.assertFalse(response.will_close)
+            payload = response.read()
+            self.assertEqual(len(payload), int(response.headers['Content-Length']))
+            self.assertIs(client.sock, connection, 'same socket, not a transparent reconnect')
+            return payload
+
+        request('GET', '/app.js')
+        token = json.loads(request('POST', '/api/session', {}))['session']
+        for mode in ('free', 'practice'):
+            for value in (0, 1, -5):
+                response = json.loads(request('POST', '/api/frame', dict(session=token, mode=mode,
+                    controls={'D01': value}, difficulty='hell', config={'n_rays': 4096})))
+                self.assertEqual(response['mode'], mode)
+        with np.load(io.BytesIO(request('POST', '/api/export', {'session': token})), allow_pickle=False) as data:
+            np.testing.assert_array_equal(data['spectrum'], data['counts'].sum(axis=0))
+        request('GET', '/api/meta')
+
+    def test_nodelay_and_idle_connection_timeout_are_applied(self):
+        options = []
+
+        class InspectHandler(Handler):
+            def do_GET(self):
+                options.append((self.connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY),
+                                self.connection.gettimeout()))
+                super().do_GET()
+
+        server = LocalServer(0, handler_class=InspectHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        client = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=5)
+        try:
+            client.request('GET', '/api/meta')
+            with client.getresponse() as response:
+                self.assertEqual(response.status, 200)
+                response.read()
+            self.assertEqual(options, [(1, 30)])
+        finally:
+            client.close()
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+    def test_headerless_legacy_request_is_rejected_without_metadata(self):
+        with socket.create_connection(('127.0.0.1', self.server.server_port), timeout=5) as connection:
+            connection.sendall(b'GET /api/meta\r\n')
+            connection.shutdown(socket.SHUT_WR)
+            received = bytearray()
+            while part := connection.recv(65536):
+                received.extend(part)
+            self.assertIn('error', json.loads(received))
+            self.assertNotIn('model_version', json.loads(received))
+
+    def test_rejected_or_ambiguous_bodies_close_the_connection(self):
+        host = f'127.0.0.1:{self.server.server_port}'
+        for method, path, headers, body, status in (
+            ('POST', '/api/session', [('Origin', 'https://example.invalid'), ('Content-Type', 'application/json'), ('Content-Length', '2')], b'{}', 403),
+            ('POST', '/api/session', [('Content-Type', 'text/plain'), ('Content-Length', '2')], b'{}', 415),
+            ('POST', '/api/session', [('Content-Type', 'application/json'), ('Content-Length', '32769')], b'', 400),
+            ('POST', '/api/session', [('Content-Type', 'application/json'), ('Transfer-Encoding', 'chunked')], b'2\r\n{}\r\n0\r\n\r\n', 400),
+            ('POST', '/api/session', [('Content-Type', 'application/json'), ('Content-Length', '2'), ('Content-Length', '2')], b'{}', 400),
+            ('POST', '/api/session', [('Content-Type', 'application/json'), ('Content-Length', '1')], b'{', 400),
+            ('GET', '/api/meta', [('Content-Length', '2')], b'{}', 400),
+        ):
+            with self.subTest(method=method, headers=headers):
+                with socket.create_connection(('127.0.0.1', self.server.server_port), timeout=5) as connection:
+                    head = f'{method} {path} HTTP/1.1\r\nHost: {host}\r\n'
+                    head += ''.join(f'{k}: {v}\r\n' for k, v in headers)
+                    # Pipelined bytes must not get interpreted after a rejection.
+                    following = f'GET /api/meta HTTP/1.1\r\nHost: {host}\r\n\r\n'.encode()
+                    connection.sendall(head.encode() + b'\r\n' + body + following)
+                    received = bytearray()
+                    while True:
+                        try:
+                            part = connection.recv(65536)
+                        except ConnectionResetError:
+                            break  # Closing with an unread body may reset TCP.
+                        if not part:
+                            break
+                        received.extend(part)
+                    self.assertTrue(received.startswith(f'HTTP/1.1 {status} '.encode()), received)
+                    self.assertIn(b'Connection: close\r\n', received)
+                    self.assertEqual(received.count(b'HTTP/1.1 '), 1, 'no response to leftover request bytes')
 
     def test_custom_http_validation(self):
         with self.request('/api/session', {}) as response:

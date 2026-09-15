@@ -78,7 +78,11 @@ class DesktopHandler(Handler):
             return
         try:
             self.connection.settimeout(3)
+            # This indefinite stream is close-delimited, not an ordinary
+            # Content-Length response reusable by the HTTP/1.1 frame API.
+            self.close_connection = True
             self.send_response(200)
+            self.send_header("Connection", "close")
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")

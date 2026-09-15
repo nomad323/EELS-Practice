@@ -24,7 +24,9 @@ def png_bytes(counts, gamma=0.5, vmax=None):
     pixels, maximum = grayscale(counts, gamma, vmax)
     stream = io.BytesIO()
     # NumPy rows ascend in y; PNG/browser screen rows descend.
-    Image.fromarray(np.flipud(pixels)).save(stream, format="PNG")
+    # Fast lossless compression for interactive loopback frames. This changes
+    # only the encoded bytes/size, not grayscale pixels or the underlying data.
+    Image.fromarray(np.flipud(pixels)).save(stream, format="PNG", compress_level=1)
     return stream.getvalue(), maximum
 
 

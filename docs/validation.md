@@ -2,6 +2,55 @@
 
 当前快捷键见「截图风格、显示顺序与键盘滚轮会话（2026-09-14）」及末节「滚轮模式左右键单步调整」；配色以「恢复原有深色配色」为准。前面“单击按钮启用”、粉色界面等均为保留的历史记录。
 
+## 参数更新延迟修复（2026-09-15）
+
+**用户观察**：所有模式的参数调节突然变慢，发生在 `4335edf` 之后。此前只测后端的同输入比较不能解释端到端手感。本轮测试为独立 Linux 回环服务 + 已有 Chrome 149.0.7827.55 / Node 22.22.1；Python 3.14.4、NumPy 2.3.5、Pillow 12.1.1，未安装依赖、操作用户服务、重新打包/部署或连接仪器。
+
+**观察与实现区分**：在修改前的实际浏览器中，226 次帧请求使用了 226 个 HTTP/1.0 连接；普通输入还先等待 requestAnimationFrame，所测各档中位调度时间为 5.3–10.4 ms。这是原有共用路径的可消除开销，**不能据此断言它们是最后一次提交新引入的故障或已复现用户机器的突增原因**。`4335edf` 并未扩大 pupil 缓存，当前修复也不扩大缓存。图片解码的单独对照没有支持切换 ImageBitmap，保留原 PNG/Image 解码路线。
+
+改动：`src/eels_sim/web/app.js` 改用微任务合并同步输入、取消两处请求前的刷新等待、提前跳过旧上下文解码并增加状态栏耗时提示；`server.py` 增加 HTTP/1.1、TCP_NODELAY、30 s 空闲超时及请求体/错误关闭保护；`desktop.py` 为保活流显式声明 Connection: close；`model.py` 跳过零项乘加；`presentation.py` 改用 PNG 压缩级别 1，保持无损像素。模型/题目版本、采样配置、非零累加顺序和原始数值规范不变。
+
+### 实际检查与结果
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v
+node --check src/eels_sim/web/app.js
+node --check tests/browser_smoke.mjs
+node --check tests/browser_latency.mjs
+node tests/browser_latency.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome
+PYTHONDONTWRITEBYTECODE=1 node tests/browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome processed/validation/latency-20260915/browser
+PYTHONDONTWRITEBYTECODE=1 node tests/desktop_browser_smoke.mjs /home/agent/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome
+git diff --check
+```
+
+- 最终 **58 项 Python 测试全部通过，9.761 s，无跳过**。新测试覆盖稀疏输入与旧密集累加精确一致、零项不乘加、快速 PNG 与默认压缩逐像素一致、静态/两模式帧/NPZ 共用一个真实 socket、TCP_NODELAY/timeout 已应用、拒绝错误/歧义请求体并关闭连接、防止剩余管线字节被执行，以及无 Host 的 HTTP/0.9 拒绝路径。原有 legacy、题目/自定义、HTTP、打包模拟、桌面生命周期检查仍通过。首轮 57 项也通过，随后补充了 HTTP/0.9 兼容拒绝测试；预期的 Linux 打包拒绝提示不是构建尝试。
+- **先红后绿**：把新增浏览器回归用于 `git archive 4335edf run.py src` 生成的独立基线副本，故意不执行 JS requestAnimationFrame 回调时，旧代码在 `send without animation-frame callback` 检查超时（退出 1）。当前代码在自由/练习两模式均通过：同一任务的 1/2/3 输入只发 3；在途收到 4/5 后不多发，首帧完成即发送 5，最终图谱/控件一致。该确定性故障注入证明调度不再依赖刷新回调，不是实际屏幕卡顿的完整复现。
+- **完整浏览器回归 PASS**：慢响应下连续拖动松手前 6 帧、最多一个在途请求、控件不回退、Esc/模式/分页旧帧保护、全部难度/精确补偿、键盘/滚轮、计时、大屏/高 DPI/窄屏同屏、重绘不模拟继续通过；无捕获 JS 异常或应用外部请求。浏览器脚本增加了上述无刷新回调检查与耗时 tooltip 检查。
+- **桌面实际浏览器生命周期 PASS**：HTTP/1.1 改动后刷新、多标签、冻结 JS、多实例及浏览器崩溃清理继续通过；最后一页关闭后 **7.457 s** 退出并释放端口。仅 Linux 隔离浏览器/替代 OS opener，不代表 Windows 默认浏览器或二进制验收。
+- 另用保存的 `4335edf` 模型副本与当前模型检查 **24 个相同输入场景**（默认/高质量/展宽大视野/Poisson 与狭角窗口，零项/稀疏/二十项/±600/微小系数）：counts、expected、energy、y、spectrum **逐元素精确相同**，metrics、裁切、通过率、metadata 相同。单元测试另验证快速 PNG 解码像素相同；PNG 文件字节不要求相同。
+
+### 浏览器延迟实测（不是固定帧率验收）
+
+新 `tests/browser_latency.mjs` 为每档先做 4 次暖机，再做 40 次交替滑块/数值框的合成 input 事件，记录输入事件开始到 Canvas 绘制提交的浏览器时钟；包含调度、HTTP/JSON、PNG 解码和绘制调用，**不包含屏幕物理呈现**。修改前后分别在无并行测试负载的独立本地服务/私有浏览器运行；不是 Windows→WSL 转发测试。下表为一次配对运行，中位数（括号 P95），单位 ms：
+
+| 场景 | 修改前 | 修改后 |
+|---|---:|---:|
+| 自由 / 标准 | 29.4 (34.2) | 20.8 (25.8) |
+| 中级练习 / 标准 | 29.3 (40.5) | 21.9 (27.2) |
+| 地狱练习 / 标准 | 30.0 (40.3) | 24.2 (30.5) |
+| 自由 / 高质量 | 48.5 (62.8) | 35.9 (42.2) |
+| 地狱练习 / 高质量 | 56.1 (68.3) | 44.3 (52.7) |
+
+练习为默认三阶九项/seed 42。修改后中位调度时间均约 **0.3 ms**；226 个帧请求全部复用 **同一个 HTTP/1.1 连接**，而非原来的 226 个连接。阶段时间、环境调度和压缩图案均有波动，单独后端时间并非每档都下降；这里不把所有改动各自宣称为独立已量化的加速。
+
+证据目录 **`processed/validation/latency-20260915/`**：`before.json` / `after.json` 及各自 stderr（分阶段延迟/连接复用），`before-regression.stderr`（预期旧版失败），`unit-tests.txt` / `unit-tests-final.txt`，`browser-test.json` / `.stderr` 与 `browser/` 截图，`desktop-browser.json` / `.stderr`，`numerical-equivalence.json`。`baseline-Bfv9GY/` 是本次生成的 `4335edf` 源码对照副本及新增测试副本，不是改写原始文件。截图由回归脚本生成；本轮未另外人工读取检查图片，不以截图生成冒充人工视觉检查。
+
+### 使用、回退与限制
+
+源码用户先按需导出，再自行停止旧服务、以原端口重新执行 `python3 run.py`，然后 Ctrl+F5；仅刷新不能使已加载的旧 Python 后端获得连接/PNG 优化。鼠标悬停状态栏 ms 可查看本帧输入到绘图和 HTTP/JSON 时间，便于继续诊断用户侧延迟。当前改动未提交；需回退时在独立目录使用 `4335edf` 源码，不覆盖当前目录或人工修改。raw、旧 Windows ZIP、系统代理/浏览器资料/系统服务均未改。
+
+用户实际浏览器、Windows/WSL 转发及其突增原因仍待确认；未测 CPU 硬件缓存未命中率，未承诺消除所有来源的延迟。未部署、重打包或硬件验收。实际改动路径为上列 5 个源文件、`tests/{test_model.py,test_server.py,test_desktop.py,browser_smoke.mjs,browser_latency.mjs}`、`README.md`、`docs/requirements.md`、本文件。
+
 ## 参数 ±300、地狱/自定义难度（2026-09-15）
 
 本轮是本地源码与离线软件验证，**未重新构建或部署 Windows EXE**。旧包和 raw 原件未改；没有安装依赖、连接仪器或操作用户正在运行的服务。历史 ±120、旧难度/评分尺度的记录保持原状；当前需求见 `docs/requirements.md` 的同日小节。
