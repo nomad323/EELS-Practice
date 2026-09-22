@@ -2,6 +2,12 @@
 
 当前快捷键见「截图风格、显示顺序与键盘滚轮会话（2026-09-14）」及末节「滚轮模式左右键单步调整」；配色以「恢复原有深色配色」为准。前面“单击按钮启用”、粉色界面等均为保留的历史记录。
 
+## 20 项系数趋势图（2026-09-22）
+
+仓库和跟踪历史中未找到现成的完整系数趋势图；运行时 Canvas 及被忽略的验证截图不能作为 20 项文档图集。新增 `tools/generate_coefficient_trends.py`，直接调用当前 `simulate()` 与 `grayscale()`，以固定 `65,536` 光线、`801 × 181` 采样、能量视野 `±180 meV`、`γ=0.5` 生成 `docs/assets/coefficient-trends/` 下的 20 张 PNG；文档见 `docs/coefficient-trends.md`。
+
+实际重跑生成器并检查：文件名与 `TERMS` 的 20 项集合精确一致，全部尺寸为 `1552 × 370`，每个文件均可由 Pillow 读取且大于 10 KiB。人工查看了 D01、D11、D40、D23 的原尺寸图，并将全部 20 张缩略图组成临时联系表逐项检查；字体、公式、五档标签、零值直线、坐标和页脚均可读，未见裁切或面板重叠。Python **61 项通过、1 项按预期跳过**；JavaScript 语法检查及 `git diff --check` 通过。图是当前离线合成模型输出，不是仪器数据或校准曲线。
+
 ## macOS Apple Silicon 桌面版（2026-09-22）
 
 在 macOS 27.0 / arm64 上使用独立 `.venv-build-macos`（Python 3.13.2、NumPy 2.5.3、Pillow 12.3.0、PyInstaller 6.22.3）构建。构建脚本不安装依赖，先执行 Python 测试，再生成 `EELS-Practice.app`、运行冻结二进制自检、验证 ad-hoc 签名结构，并以 `ditto` 打包保留 App bundle 与符号链接。没有使用 Developer ID 或公证，没有修改 Gatekeeper、默认浏览器或系统 Python。

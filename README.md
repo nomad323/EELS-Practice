@@ -117,6 +117,8 @@ curl --noproxy '*' http://127.0.0.1:8765/api/meta
 
 ## 约定与适用范围
 
+20 项系数从负值到零再到正值时的单项光斑变化，见 [系数趋势图](docs/coefficient-trends.md)。图由当前前向模型直接生成，包含每项的 −120、−60、0、+60、+120 meV 对照。
+
 角坐标 `u,v` 相对于参考孔径归一化：
 
 界面、键盘选择及答案表使用同一显示顺序：
@@ -201,6 +203,7 @@ Git 仓库仅包含源码、测试、构建脚本及软件文档。`.gitignore` 
 - `src/eels_sim/server.py`、`web/`：回环 HTTP 和浏览器界面。
 - `run_desktop.py`、`src/eels_sim/desktop.py`、`web/desktop.js`：自动浏览器启动与页面连接生命周期；原 `run.py` 不变。
 - `tools/build_windows.py`、`tools/build_macos.py`、`requirements-build.txt`、平台使用说明：Windows/macOS 桌面构建；与运行依赖分开。
+- `tools/generate_coefficient_trends.py`、`docs/coefficient-trends.md`：由当前模型生成的 20 项单系数光斑趋势图及阅读说明。
 - `src/eels_sim/legacy.py`：原默认算法回归路径。
 - `tests/`：数值、HTTP 与实际浏览器检查。
 - `processed/`：忽略入库的派生示例/验证图，与 `raw/` 原件分离。
