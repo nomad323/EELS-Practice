@@ -2,6 +2,17 @@
 
 当前快捷键见「截图风格、显示顺序与键盘滚轮会话（2026-09-14）」及末节「滚轮模式左右键单步调整」；配色以「恢复原有深色配色」为准。前面“单击按钮启用”、粉色界面等均为保留的历史记录。
 
+## macOS Apple Silicon 桌面版（2026-09-22）
+
+在 macOS 27.0 / arm64 上使用独立 `.venv-build-macos`（Python 3.13.2、NumPy 2.5.3、Pillow 12.3.0、PyInstaller 6.22.3）构建。构建脚本不安装依赖，先执行 Python 测试，再生成 `EELS-Practice.app`、运行冻结二进制自检、验证 ad-hoc 签名结构，并以 `ditto` 打包保留 App bundle 与符号链接。没有使用 Developer ID 或公证，没有修改 Gatekeeper、默认浏览器或系统 Python。
+
+- Python 测试 **61 项通过、1 项跳过**；跳过项是未随 Git 仓库分发的 raw 原件对照。首次运行发现原测试把 Linux/Windows 的 `TCP_NODELAY` 返回值 1 写死；macOS 返回非零值 4。断言改为跨平台检查“非零即启用”，应用设置逻辑未放宽。JavaScript 语法检查与 `git diff --check` 通过。
+- 成品：`processed/releases/macos-arm64-20260922-142622-388888/EELS-Practice-macOS-arm64.zip`，16.1 MiB；解压 70.9 MiB；SHA256 `d41f805a2505b197047fe0727a8d4ab9e1825b7b70b2c0532de415482409d31e`。主程序经 `file` 确认为 Mach-O 64-bit arm64。
+- 构建目录中的冻结二进制自检 PASS；再从最终 ZIP 解压到另一临时目录，签名结构校验及自检均 PASS。检查覆盖网页资源、回环 HTTP、NumPy 模拟、Pillow PNG、NPZ 导出；基线 FWHM 为 8.0020321711 meV。
+- 通过 macOS `open` 按普通 App 方式实际启动，默认 Chrome 自动打开 `127.0.0.1` 随机端口；页面显示 Offline 状态、20 项分页控件、双图和 8.002 meV。实际刷新后重新连接并恢复渲染；关闭最后一个程序标签后后台进程退出并释放生命周期。
+
+限制：本轮只生成并验收 Apple Silicon arm64 成品；未在 Intel Mac 构建/验收 x86_64，也未测试从互联网下载后真实 quarantine/Gatekeeper 流程、Developer ID、公证或其他用户的默认浏览器。软件仍为离线合成模型，不是仪器或标定验收。
+
 ## GitHub 发布前检查
 
 本节是本地发布范围检查，不是应用功能、安全认证、实验结果或硬件验收。检查基线为 `b2e1650`；尚无远程仓库配置，未进行提交、推送、GitHub 建库或 Releases 上传。

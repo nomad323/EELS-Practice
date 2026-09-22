@@ -1,6 +1,6 @@
 # EELS 像差调节练习器
 
-用本地浏览器练习一至五阶、共 20 项像差补偿。保留原 WSL2 源码运行方式，新增 Windows 轻量便携版启动/构建入口。**离线合成模型，不连接仪器，不是已标定的真实色差/校正器模型。**
+用本地浏览器练习一至五阶、共 20 项像差补偿。保留原 WSL2 源码运行方式，并提供 Windows 与 macOS 轻量桌面版启动/构建入口。**离线合成模型，不连接仪器，不是已标定的真实色差/校正器模型。**
 
 ## 本次源码更新（2026-09-15）
 
@@ -15,6 +15,23 @@ Linux 本地 Chromium 检查中，标准自由模式输入到 Canvas 绘图中�
 **使用本修复需先按需导出，自行停止并重启源码服务 `python3 run.py`（保留自选端口），再 Ctrl+F5。** 未操作你正在运行的实例，未重打 Windows EXE/ZIP；旧便携包不会自动更新。
 
 ## 启动
+
+### macOS 桌面版
+
+macOS 成品为按处理器架构区分的 `EELS-Practice.app`，使用系统默认浏览器，不内置 Electron/Chromium。解压整个 ZIP 后双击 App 即可；关闭最后一个程序页面后，后台通常约 5～10 秒退出。使用端无需另装 Python 或 Node。
+
+当前已生成 Apple Silicon 成品：`processed/releases/macos-arm64-20260922-142622-388888/EELS-Practice-macOS-arm64.zip`（16.1 MiB，解压后 70.9 MiB）。已在本机验证 ZIP 解压后的 arm64 App、自检、默认 Chrome 启动、页面渲染、刷新重连与关闭最后页面后自动退出。Intel Mac 需在 Intel Mac 上运行同一脚本生成 `x86_64` 成品；本轮没有把 arm64 包标成通用包。
+
+重新构建须在对应架构的 macOS 与独立 Python ≥3.10 venv 中执行：
+
+```bash
+python3 -m venv .venv-build-macos
+source .venv-build-macos/bin/activate
+python -m pip install -r requirements-build.txt
+python tools/build_macos.py
+```
+
+脚本先运行全部 Python 测试，再构建 `.app`、运行冻结二进制离线自检、校验 App 签名结构，最后用 macOS `ditto` 生成保留 bundle/符号链接的 ZIP。输出到新的 `processed/releases/macos-架构-时间戳/`，不覆盖旧成品。构建仅为 ad-hoc 签名，**没有 Apple Developer ID 签名或公证**；首次打开可能出现 Gatekeeper 提示，按随包说明通过 Finder 的“打开”确认来源，不要关闭系统安全功能。
 
 ### Windows 便携版（已生成 Windows x64 成品）
 
@@ -183,7 +200,7 @@ Git 仓库仅包含源码、测试、构建脚本及软件文档。`.gitignore` 
 - `src/eels_sim/presentation.py`：黑白 PNG、无损 NPZ 导出。
 - `src/eels_sim/server.py`、`web/`：回环 HTTP 和浏览器界面。
 - `run_desktop.py`、`src/eels_sim/desktop.py`、`web/desktop.js`：自动浏览器启动与页面连接生命周期；原 `run.py` 不变。
-- `tools/build_windows.py`、`requirements-build.txt`、`tools/portable-readme.txt`：Windows 便携构建及随包说明；与运行依赖分开。
+- `tools/build_windows.py`、`tools/build_macos.py`、`requirements-build.txt`、平台使用说明：Windows/macOS 桌面构建；与运行依赖分开。
 - `src/eels_sim/legacy.py`：原默认算法回归路径。
 - `tests/`：数值、HTTP 与实际浏览器检查。
 - `processed/`：忽略入库的派生示例/验证图，与 `raw/` 原件分离。
