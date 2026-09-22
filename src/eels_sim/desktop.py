@@ -115,7 +115,7 @@ def run(opener=webbrowser.open, lifetime=None):
     try:
         url = f"http://127.0.0.1:{server.server_port}/#desktop={lifetime.token}"
         if not opener(url):
-            raise RuntimeError("无法打开默认浏览器。请在 Windows 设置中配置默认浏览器后重试。")
+            raise RuntimeError("无法打开默认浏览器。请在系统设置中配置默认浏览器后重试。")
         while not lifetime.expired():
             lifetime.stopping.wait(0.2)
         if not lifetime.connected_once:
