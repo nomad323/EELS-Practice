@@ -16,6 +16,7 @@ let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false, sup
 let practiceStartedAt = null, practiceElapsed = 0, practiceInterval = null;
 let attemptPaused = false;
 let attemptActive = false, attemptSubmitted = false, attemptId = null, attemptStartedAt = null;
+let pendingSubmission = null, attemptGeneration = 0;
 let postReviewTune = false;
 let lastSubmittedRecord = null, pendingAnswerScroll = false;
 let attemptTerms = {}, activeTuneStartedAt = null, focusStartedAt = null, attemptSceneChanged = false, statsRecords = [], currentDrill = null;
@@ -38,12 +39,14 @@ function formatDuration(milliseconds) {
 function renderPracticeTimer() {
   // Measure elapsed time, not interval ticks: background throttling must not
   // turn a delayed repaint into lost practice time.
-  const elapsed = practiceStartedAt === null ? practiceElapsed : performance.now() - practiceStartedAt;
+  const elapsed = practiceElapsed + (practiceStartedAt === null ? 0 : Math.max(0, performance.now() - practiceStartedAt));
   const tenths = Math.floor(Math.max(0, elapsed) / 100);
   const pad = value => String(value).padStart(2, "0");
   $("practice-time").textContent = `${pad(Math.floor(tenths / 36000))}:${pad(Math.floor(tenths / 600) % 60)}:${pad(Math.floor(tenths / 10) % 60)}.${tenths % 10}`;
 }
 function resetPracticeTimer() {
+  if (pendingSubmission) return;
+  attemptGeneration++;
   clearInterval(practiceInterval); practiceInterval = null;
   practiceStartedAt = null; practiceElapsed = 0;
   attemptPaused = false; document.body.classList.remove("attempt-paused"); $("pause-banner").hidden = true;
@@ -53,19 +56,20 @@ function resetPracticeTimer() {
   renderPracticeTimer(); buttonState();
 }
 function startPracticeTimer(force = false) {
-  if ($("mode").value !== "practice" || attemptActive || attemptSubmitted || (!force && (running || dirty)) || failed || !lastFrame?.question) return;
+  if (pendingSubmission || $("mode").value !== "practice" || attemptActive || attemptSubmitted || (!force && (running || dirty)) || failed || !lastFrame?.question) return;
+  attemptGeneration++;
   practiceElapsed = 0; practiceStartedAt = performance.now(); attemptStartedAt = new Date().toISOString();
   attemptActive = true; attemptId = attemptUuid(); attemptTerms = emptyAttemptTerms(); attemptSceneChanged = false;
   focusStartedAt = selectedTerm ? performance.now() : null;
-  practiceInterval = setInterval(renderPracticeTimer, 100);
+  clearInterval(practiceInterval); practiceInterval = setInterval(renderPracticeTimer, 100);
   renderPracticeTimer(); buttonState();
 }
 function togglePracticePause() {
-  if (!attemptActive) return;
+  if (!attemptActive || pendingSubmission) return;
   if (attemptPaused) {
     attemptPaused = false; practiceStartedAt = performance.now();
     focusStartedAt = selectedTerm ? performance.now() : null;
-    practiceInterval = setInterval(renderPracticeTimer, 100);
+    clearInterval(practiceInterval); practiceInterval = setInterval(renderPracticeTimer, 100);
   } else {
     finishWheel(); endFocusTerm(selectedTerm);
     practiceElapsed += performance.now() - practiceStartedAt;
@@ -77,17 +81,32 @@ function togglePracticePause() {
   renderPracticeTimer(); updatePages(); buttonState();
 }
 function ensureAttemptStarted() {
-  if (attemptPaused) return false;
+  if (attemptPaused || pendingSubmission) return false;
   if ($("mode").value === "practice" && !attemptActive && !attemptSubmitted) startPracticeTimer();
   return attemptActive;
 }
 function recordAdjustment(name, before, after) {
-  if (before === after || !ensureAttemptStarted()) return;
+  if (before === after || !canEditCoefficients() || !ensureAttemptStarted()) return;
   const row = attemptTerms[name], delta = after - before, direction = Math.sign(delta);
   row.adjustments++; row.path_abs += Math.abs(delta);
   if (!row.first_delta) row.first_delta = delta;
   if (row._last_direction && direction !== row._last_direction) row.reversals++;
   row._last_direction = direction;
+}
+function canEditCoefficients() {
+  return !pendingSubmission && !attemptPaused && (!attemptSubmitted || postReviewTune);
+}
+function submissionEditors() {
+  return Array.from(document.querySelectorAll('input[id],select[id]'), el =>
+    [el.id, el.value, el.type === 'checkbox' ? el.checked : null]);
+}
+function restoreSubmissionEditors() {
+  if (!pendingSubmission) return;
+  pendingSubmission.editors.forEach(([id, value, checked]) => {
+    const el = $(id); el.value = value;
+    if (checked !== null) el.checked = checked;
+  });
+  syncControls();
 }
 function beginActiveTerm(name) {
   if (!ensureAttemptStarted()) return;
@@ -154,7 +173,7 @@ function updatePages() {
   const visible = pageTerms(currentPage);
   names.forEach(n => {
     $(`row-${n}`).hidden = !visible.includes(n);
-    $(`row-${n}`).querySelectorAll("input,button").forEach(el => el.disabled = orders[n] > activeOrder || (attemptSubmitted && !postReviewTune) || attemptPaused);
+    $(`row-${n}`).querySelectorAll("input,button").forEach(el => el.disabled = orders[n] > activeOrder || !canEditCoefficients());
   });
   [3, 4, 5].forEach(page => {
     $(`page-${page}`).disabled = !pageTerms(page).length;
@@ -209,12 +228,14 @@ function updateDifficulty() {
   $("custom-difficulty").hidden = $("difficulty").value !== "custom";
 }
 function newQuestion() {
+  if (pendingSubmission) return;
   // Reject invalid draft settings before clearing the current tuning/timer.
   try { customAmplitude(); }
   catch (error) { $("error").textContent = error.message; return; }
   finishWheel(); activeOrder = number("max-order"); resetPracticeTimer(); updatePages(); zeroControls(); request("new");
 }
 function zeroControls(track = false) {
+  if (!canEditCoefficients()) return;
   if (track) names.filter(name => orders[name] <= activeOrder).forEach(name => recordAdjustment(name, controls[name], 0));
   controls = Object.fromEntries(names.map(n => [n, 0])); syncControls();
 }
@@ -231,7 +252,7 @@ function updateWheelUI() {
   updateWheelBanner();
 }
 function startWheel(name) {
-  if (!name || wheelTarget || attemptSubmitted || !pageTerms(currentPage).includes(name) || !wheelNote(name)) return;
+  if (!canEditCoefficients() || !name || wheelTarget || !pageTerms(currentPage).includes(name) || !wheelNote(name)) return;
   selectTerm(name, true);
   wheelTarget = name;
   // Snapshot the current controls, not a possibly older rendered frame. A wheel
@@ -274,7 +295,7 @@ function adjustWheelStep(direction) {
 function nudgeCoefficient(direction) {
   // Wheel and keyboard share the same step validation, rounding, bounds and
   // transaction/pipeline. Only the currently active coefficient can change.
-  if (!wheelTarget || !wheelNote(wheelTarget)) return;
+  if (!canEditCoefficients() || !wheelTarget || !wheelNote(wheelTarget)) return;
   const name = wheelTarget, step = Number($(`wheel-step-${name}`).value);
   const units = Math.round(controls[name]*100) + direction*Math.round(step*100);
   const next = Math.max(-meta.control_limit*100, Math.min(meta.control_limit*100, units))/100;
@@ -297,16 +318,18 @@ function buildControls() {
     [slider, input].forEach(el => { el.min = -meta.control_limit; el.max = meta.control_limit; el.step = "0.01"; el.value = "0"; });
     const reset = document.createElement("button"); reset.textContent = "↺"; reset.title = `归零 ${name}`; reset.setAttribute("aria-label", reset.title);
     slider.addEventListener("input", () => {
+      if (!canEditCoefficients()) { syncControls(); return; }
       const next = Number(slider.value); recordAdjustment(name, controls[name], next);
       controls[name] = next; input.value = slider.value; schedule();
     });
     input.addEventListener("input", () => {
+      if (!canEditCoefficients()) { syncControls(); return; }
       if (input.checkValidity() && input.value !== "") {
         const next = Number(input.value); recordAdjustment(name, controls[name], next);
         controls[name] = next; slider.value = input.value; schedule();
       }
     });
-    reset.addEventListener("click", () => { recordAdjustment(name, controls[name], 0); controls[name] = 0; syncControls(); request(); });
+    reset.addEventListener("click", () => { if (!canEditCoefficients()) return; recordAdjustment(name, controls[name], 0); controls[name] = 0; syncControls(); request(); });
     // Keep step editors and activation buttons in stable positions.
     const settings = document.createElement("div"); settings.className = "wheel-settings"; settings.id = `wheel-settings-${name}`;
     const toggle = document.createElement("button"); toggle.id = `wheel-toggle-${name}`; toggle.className = "wheel-toggle";
@@ -345,6 +368,7 @@ function schedule() {
   }
 }
 function request(action = "update") {
+  if (pendingSubmission) return;
   // Explicit mode/scene/actions end tuning before changing its context.
   finishWheel();
   latestInputAt = performance.now();
@@ -354,12 +378,15 @@ function request(action = "update") {
 }
 function buttonState() {
   $("timer-start").textContent = attemptPaused ? "继续作答" : "暂停";
-  $("timer-start").disabled = !attemptActive || running || dirty || failed;
-  $("submit-attempt").disabled = !attemptActive || attemptPaused || running || dirty || failed || !lastFrame?.question;
-  ["new-question", "random-question", "retry", "reveal"].forEach(id => $(id).disabled = running);
-  $("start-drill").disabled = running || dirty || failed || !currentDrill;
-  $("zero").disabled = (attemptSubmitted && !postReviewTune) || attemptPaused || running;
-  ["export", "save-png"].forEach(id => $(id).disabled = running || dirty || failed || !lastFrame);
+  $("timer-start").disabled = !!pendingSubmission || !attemptActive || running || dirty || failed;
+  $("submit-attempt").disabled = pendingSubmission?.inFlight || !attemptActive || attemptPaused || running || dirty || failed || !lastFrame?.question;
+  ["new-question", "random-question", "retry", "reveal", "result-next", "result-answer"].forEach(id => $(id).disabled = !!pendingSubmission || running);
+  $("start-drill").disabled = !!pendingSubmission || running || dirty || failed || !currentDrill;
+  $("zero").disabled = !canEditCoefficients() || running;
+  $("mode").disabled = !!pendingSubmission;
+  ["max-order", "term-count", "difficulty", "custom-amplitude", "seed", "reset-scene", "gamma", "lock-intensity", "pupil-x", "pupil-y", "angular-slit", "y-psf", "extra-sigma", "counts", "background", "noise-seed", "poisson", "field", "quality"].forEach(id => $(id).disabled = !!pendingSubmission);
+  if (pendingSubmission) updatePages();
+  ["export", "save-png"].forEach(id => $(id).disabled = !!pendingSubmission || running || dirty || failed || !lastFrame);
 }
 async function pump() {
   if (running || !dirty || !session) return;
@@ -665,26 +692,42 @@ async function loadStats() {
   catch (error) { $("error").textContent = error.message; }
 }
 async function submitAttempt() {
-  if (!attemptActive || attemptPaused || running || dirty || failed || !lastFrame?.question) return;
-  finishWheel();
-  endFocusTerm(selectedTerm);
-  practiceElapsed += performance.now() - practiceStartedAt; practiceStartedAt = null;
-  clearInterval(practiceInterval); practiceInterval = null; renderPracticeTimer(); buttonState();
+  if (pendingSubmission?.inFlight || !attemptActive || attemptPaused || running || dirty || failed || !lastFrame?.question) return;
+  if (!pendingSubmission) {
+    finishWheel();
+    endFocusTerm(selectedTerm);
+    if (practiceStartedAt !== null) practiceElapsed += Math.max(0, performance.now() - practiceStartedAt);
+    practiceStartedAt = null;
+    clearInterval(practiceInterval); practiceInterval = null; renderPracticeTimer();
+    pendingSubmission = {generation: attemptGeneration, id: attemptId, inFlight: false, editors: submissionEditors(),
+      payload: {session, attempt_id: attemptId, duration_ms: practiceElapsed,
+        started_at: attemptStartedAt, process: attemptProcess()}};
+  }
+  const submission = pendingSubmission;
+  submission.inFlight = true;
+  updatePages(); buttonState();
   try {
-    const response = await post("/api/stats/submit", {session, attempt_id: attemptId,
-      duration_ms: practiceElapsed, started_at: attemptStartedAt, process: attemptProcess()});
+    const response = await post("/api/stats/submit", submission.payload);
+    if (pendingSubmission !== submission || attemptGeneration !== submission.generation || attemptId !== submission.id) return;
+    pendingSubmission = null;
     attemptActive = false; attemptSubmitted = true; lastSubmittedRecord = response.attempt; renderAttemptResult(response.attempt);
+    $("error").textContent = "";
     updatePages(); buttonState(); await loadStats();
   } catch (error) {
-    practiceStartedAt = performance.now();
-    focusStartedAt = selectedTerm ? performance.now() : null;
-    practiceInterval = setInterval(renderPracticeTimer, 100);
+    if (pendingSubmission !== submission || attemptGeneration !== submission.generation || attemptId !== submission.id) return;
+    submission.inFlight = false;
+    // A lost response may already have persisted this exact attempt. Keep its
+    // id, duration and process frozen so another click is an idempotent retry.
     $("error").textContent = error.message; buttonState();
   }
 }
 function download(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; a.click(); }
 function bind() {
   const swallow = event => { event.preventDefault(); event.stopImmediatePropagation(); };
+  ["input", "change"].forEach(type => document.addEventListener(type, event => {
+    if (!pendingSubmission || !event.target.matches?.('input,select')) return;
+    restoreSubmissionEditors(); swallow(event);
+  }, true));
   document.addEventListener("wheel", event => {
     if (!wheelTarget) {
       // Prevent native spinning of inactive coefficient number inputs while
@@ -699,7 +742,8 @@ function bind() {
     nudgeCoefficient(-Math.sign(event.deltaY));
   }, {capture: true, passive: false});
   document.addEventListener("keydown", event => {
-    if (attemptPaused && event.target.closest?.(".workbench")) { swallow(event); return; }
+    if (!canEditCoefficients() && event.target.closest?.(".workbench") &&
+        !event.target.closest?.('button:not(.wheel-toggle),summary,a')) { swallow(event); return; }
     if (event.isComposing) return;
     if (wheelTarget) {
       if (['Escape', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(event.key)) {
@@ -752,11 +796,12 @@ function bind() {
   $("resume-attempt").addEventListener("click", togglePracticePause);
   $("submit-attempt").addEventListener("click", submitAttempt);
   document.addEventListener("visibilitychange", () => {
+    if (pendingSubmission) return;
     if (document.hidden && attemptActive && !attemptPaused) togglePracticePause();
     else if (!document.hidden && $("mode").value === "practice" && !attemptActive && !attemptSubmitted && lastFrame?.question) startPracticeTimer();
   });
   $("result-next").addEventListener("click", () => {
-    if ($("mode").value !== "practice" || running || !lastSubmittedRecord) return;
+    if (pendingSubmission || $("mode").value !== "practice" || running || !lastSubmittedRecord) return;
     const {question: q, scene: savedScene} = lastSubmittedRecord;
     $("max-order").value = String(q.max_order); updateTermChoices();
     $("term-count").value = String(q.term_count); $("difficulty").value = q.difficulty; updateDifficulty();
@@ -768,13 +813,14 @@ function bind() {
     $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; newQuestion();
   });
   $("result-continue").addEventListener("click", () => {
-    if (!attemptSubmitted) return;
+    if (pendingSubmission || !attemptSubmitted) return;
     postReviewTune = true; updatePages(); buttonState();
     $("attempt-summary").textContent += " 现在是提交后的自由复看，后续调节不会改写已保存战绩。";
     document.querySelector(".workbench").scrollIntoView({block: "start"});
   });
-  $("result-answer").addEventListener("click", () => { pendingAnswerScroll = true; request("reveal"); });
+  $("result-answer").addEventListener("click", () => { if (pendingSubmission) return; pendingAnswerScroll = true; request("reveal"); });
   $("mode").addEventListener("change", () => {
+    if (pendingSubmission) { $("mode").value = "practice"; return; }
     finishWheel(); resetPracticeTimer();
     const practice = $("mode").value === "practice";
     $("practice").hidden = !practice; $("reveal").hidden = !practice; $("feedback").hidden = true;
@@ -786,10 +832,10 @@ function bind() {
   });
   $("zero").addEventListener("click", () => { zeroControls(true); request(); });
   $("new-question").addEventListener("click", newQuestion);
-  $("random-question").addEventListener("click", () => { $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; newQuestion(); });
+  $("random-question").addEventListener("click", () => { if (pendingSubmission) return; $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; newQuestion(); });
   $("start-drill").addEventListener("click", () => {
     const drill = currentDrill;
-    if (!drill || $("mode").value !== "practice" || running || dirty || failed) return;
+    if (pendingSubmission || !drill || $("mode").value !== "practice" || running || dirty || failed) return;
     if (attemptActive && !confirm("当前未提交的作答会放弃。确定按建议开始新题？")) return;
     $("max-order").value = String(drill.maxOrder); updateTermChoices();
     $("term-count").value = String(drill.termCount);
@@ -799,21 +845,24 @@ function bind() {
     newQuestion();
     document.querySelector(".session-panel").scrollIntoView({block: "start"});
   });
-  $("retry").addEventListener("click", () => { resetPracticeTimer(); updatePages(); zeroControls(); request("retry"); });
+  $("retry").addEventListener("click", () => { if (pendingSubmission) return; resetPracticeTimer(); updatePages(); zeroControls(); request("retry"); });
   $("reveal").addEventListener("click", () => request(lastFrame?.feedback ? "hide" : "reveal"));
   ["pupil-x", "pupil-y", "angular-slit", "y-psf", "extra-sigma", "counts", "background", "noise-seed", "poisson", "field", "quality"].forEach(id => $(id).addEventListener("change", () => {
+    if (pendingSubmission) return;
     if (attemptActive) attemptSceneChanged = true;
     request();
   }));
-  $("gamma").addEventListener("input", () => { $("gamma-value").textContent = Number($("gamma").value).toFixed(2); schedule(); });
-  $("lock-intensity").addEventListener("change", () => { lockedVmax = $("lock-intensity").checked ? lastFrame?.display_vmax ?? null : null; request(); });
+  $("gamma").addEventListener("input", () => { if (pendingSubmission) return; $("gamma-value").textContent = Number($("gamma").value).toFixed(2); schedule(); });
+  $("lock-intensity").addEventListener("change", () => { if (pendingSubmission) return; lockedVmax = $("lock-intensity").checked ? lastFrame?.display_vmax ?? null : null; request(); });
   $("reset-scene").addEventListener("click", () => {
+    if (pendingSubmission) return;
     if (attemptActive) attemptSceneChanged = true;
     const mapping = {"pupil-x": "pupil_x", "pupil-y": "pupil_y", "angular-slit": "angular_slit_half", "y-psf": "y_psf_sigma", "extra-sigma": "extra_sigma_mev", "counts": "expected_counts", "background": "background_per_pixel", "noise-seed": "noise_seed", "field": "energy_half_range_mev"};
     Object.entries(mapping).forEach(([id, key]) => $(id).value = meta.defaults[key]); $("poisson").checked = false; $("quality").value = "normal"; request();
   });
   $("save-png").addEventListener("click", () => { if (lastFrame) download(`data:image/png;base64,${lastFrame.image_png}`, "eels-grayscale.png"); });
   $("export").addEventListener("click", async () => {
+    if (pendingSubmission) return;
     if ($("mode").value === "practice" && !confirm("NPZ 包含本题真实像差和理想补偿答案。确定导出？")) return;
     try {
       const blob = await post("/api/export", {session}, true); const url = URL.createObjectURL(blob);

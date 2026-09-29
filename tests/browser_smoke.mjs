@@ -476,11 +476,35 @@ try {
     assert.equal(await evaluate('attemptSubmitted'), false);
   }
   await assertTimerReset();
+  // Controlled clock: resumed display and saved duration must use the same accumulated time.
+  await evaluate(`window.__nativeNow=performance.now.bind(performance);window.__timerNow=1000;Object.defineProperty(performance,'now',{configurable:true,value:()=>window.__timerNow});practiceStartedAt=1000;practiceElapsed=0`);
+  await evaluate(`window.__timerNow=61000;renderPracticeTimer()`);
+  assert.equal(await evaluate(`document.getElementById('practice-time').textContent`), '00:01:00.0');
+  await pointerClick('timer-start');
+  await evaluate(`window.__timerNow=90000;renderPracticeTimer()`);
+  assert.equal(await evaluate(`document.getElementById('practice-time').textContent`), '00:01:00.0');
+  await pointerClick('resume-attempt');
+  await evaluate(`window.__timerNow=95000;renderPracticeTimer()`);
+  assert.equal(await evaluate(`document.getElementById('practice-time').textContent`), '00:01:05.0');
+  await click('timer-start');
+  await evaluate('window.__timerNow=120000'); await click('resume-attempt');
+  await evaluate('window.__timerNow=125000;renderPracticeTimer()');
+  assert.equal(await evaluate(timerText), '00:01:10.0', 'multiple pauses exclude paused wall time');
+  await click('retry'); await assertTimerReset();
+  await evaluate(`Object.defineProperty(performance,'now',{configurable:true,value:window.__nativeNow});practiceStartedAt=performance.now();practiceElapsed=0`);
   const timerFrame = await evaluate('JSON.stringify(lastFrame)');
   const timerRequests = requests.filter(url => url.endsWith('/api/frame')).length;
   assert.equal(await evaluate(`!document.getElementById('submit-attempt').disabled`), true);
   await pointerClick('timer-start');
   assert.equal(await evaluate('attemptPaused && practiceStartedAt === null'), true);
+  const pausedControls = await evaluate('JSON.stringify(controls)');
+  const pausedProcess = await evaluate('JSON.stringify(attemptProcess())');
+  await evaluate(`document.body.focus();document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));document.getElementById('zero').click();const input=document.getElementById('value-D10');input.value='23';input.dispatchEvent(new Event('input',{bubbles:true}))`);
+  await evaluate(`const toolbar=document.getElementById('page-3');toolbar.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));toolbar.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}))`);
+  await wheelAt('spot', -120);
+  assert.equal(await evaluate('wheelTarget'), null, 'body Enter cannot start tuning while paused');
+  assert.equal(await evaluate('JSON.stringify(controls)'), pausedControls);
+  assert.equal(await evaluate('JSON.stringify(attemptProcess())'), pausedProcess);
   assert.equal(await evaluate(`document.getElementById('submit-attempt').disabled`), true);
   assert.equal(await evaluate(`document.getElementById('pause-banner').hidden`), false);
   await pointerClick('resume-attempt');
@@ -525,6 +549,10 @@ try {
   await mkdir(join(root, artifactDirectory), {recursive: true});
   await writeFile(join(root, artifactDirectory, 'blind-review-history.png'), Buffer.from(recordsShot.data,'base64'));
   assert.equal(await evaluate(`document.getElementById('value-D11').disabled`), true, 'submitted controls are locked');
+  const readonlyControls = await evaluate('JSON.stringify(controls)');
+  await evaluate(`document.getElementById('slide-D11').value='20';document.getElementById('slide-D11').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('zero').click();startWheel('D11')`);
+  assert.equal(await evaluate('JSON.stringify(controls)'), readonlyControls, 'submitted review stays read-only before continue');
+  assert.equal(await evaluate('wheelTarget'), null);
   await mkdir(join(root, artifactDirectory), {recursive: true});
   await evaluate(`document.getElementById('attempt-result').scrollIntoView({block:'start'})`);
   const resultShot = await command('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
@@ -532,6 +560,18 @@ try {
   await evaluate('window.scrollTo(0,0)');
   await click('result-continue');
   assert.equal(await evaluate(`document.getElementById('value-D11').disabled`), false, 'post-review tuning unlocks controls without changing saved result');
+  const savedReview = await evaluate('JSON.stringify(statsRecords[0])');
+  const reviewedValue = await evaluate('controls.D11');
+  await evaluate(`selectTerm('D11');document.body.focus()`);
+  await key('Enter');
+  assert.equal(await evaluate('wheelTarget'), 'D11', 'review tuning starts with Enter');
+  await key('ArrowRight');
+  await wheelAt('spot', -120);
+  await key('Enter');
+  assert.ok(Math.abs((await evaluate('controls.D11')) - reviewedValue - 2) < 1e-6, 'keyboard and wheel each adjust the review coefficient');
+  assert.equal(await evaluate('practiceInterval'), null, 'review tuning does not restart the timer');
+  await evaluate('loadStats()'); await idle();
+  assert.equal(await evaluate('JSON.stringify(statsRecords[0])'), savedReview, 'review tuning does not rewrite the saved record');
   await click('result-answer');
   assert.equal(await evaluate(`document.getElementById('feedback').hidden`), false);
   await click('start-drill');
@@ -897,12 +937,71 @@ try {
     assert.equal(frameRequestCount(), beforeOldBackend, 'incompatible backend receives no frame requests');
     await command('Page.removeScriptToEvaluateOnNewDocument', {identifier:oldMeta.identifier});
   }
+  await command('Page.navigate', {url:`http://127.0.0.1:${port}/`}); await idle();
+  await change('mode', 'practice');
+  const priorRecords = await evaluate('statsRecords.length');
+  await evaluate(`window.__nativeNow=performance.now.bind(performance);window.__timerNow=1000;Object.defineProperty(performance,'now',{configurable:true,value:()=>window.__timerNow});practiceStartedAt=1000;practiceElapsed=0`);
+  await evaluate('window.__timerNow=61000'); await click('timer-start');
+  await evaluate('window.__timerNow=90000'); await click('resume-attempt');
+  await evaluate('window.__timerNow=95000;renderPracticeTimer()');
+  assert.equal(await evaluate(timerText), '00:01:05.0');
+  await evaluate(`window.__submitFetch=window.fetch;window.__submitCount=0;window.__submitGate={};window.fetch=(url,options)=>{if(url!=='/api/stats/submit')return window.__submitFetch(url,options);window.__submitCount++;return new Promise((resolve,reject)=>{window.__submitGate.resolve=()=>resolve(window.__submitFetch(url,options));window.__submitGate.reject=reject})}`);
+  await evaluate(`document.getElementById('submit-attempt').click();document.getElementById('submit-attempt').click();void submitAttempt()`);
+  await waitFor(() => evaluate('window.__submitCount===1'), 'one in-flight submission');
+  const lockedId = await evaluate('attemptId');
+  const lockedProcess = await evaluate('JSON.stringify(attemptProcess())');
+  const lockedControls = await evaluate('JSON.stringify(controls)');
+  const beforeConflictRequests = requests.length;
+  await evaluate(`newQuestion();togglePracticePause();document.getElementById('retry').click();document.getElementById('export').click();document.getElementById('mode').value='free';document.getElementById('mode').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quality').value='high';document.getElementById('quality').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('slide-D10').value='17';document.getElementById('slide-D10').dispatchEvent(new Event('input',{bubbles:true}));Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));delete document.hidden`);
+  assert.equal(await evaluate('attemptId'), lockedId, 'conflicting actions cannot replace an in-flight attempt');
+  assert.equal(await evaluate('JSON.stringify(controls)'), lockedControls);
+  assert.equal(await evaluate('JSON.stringify(attemptProcess())'), lockedProcess);
+  assert.equal(await evaluate(`document.getElementById('mode').value`), 'practice');
+  assert.equal(await evaluate(`document.getElementById('quality').value`), 'normal');
+  assert.equal(requests.length, beforeConflictRequests, 'conflicting actions send no network request');
+  assert.equal(await evaluate('practiceStartedAt === null && practiceInterval === null && !attemptPaused'), true);
+  await evaluate('window.__submitGate.resolve()');
+  await waitFor(() => evaluate('attemptSubmitted'), 'delayed submit response');
+  await idle();
+  assert.equal(await evaluate('window.__submitCount'), 1);
+  assert.equal(await evaluate('lastSubmittedRecord.duration_ms'), 65000);
+  assert.equal(await evaluate('statsRecords.length'), priorRecords + 1);
+  await evaluate('window.fetch=window.__submitFetch');
+  await evaluate(`Object.defineProperty(performance,'now',{configurable:true,value:window.__nativeNow})`);
+  await click('retry');
+  await evaluate(`window.__submitFetch=window.fetch;window.__submitCount=0;window.fetch=(url,options)=>{if(url!=='/api/stats/submit')return window.__submitFetch(url,options);window.__submitCount++;return window.__submitFetch(url,options).then(()=>{throw new Error('lost response')})}`);
+  await evaluate(`document.getElementById('submit-attempt').click()`);
+  await waitFor(() => evaluate('pendingSubmission && !pendingSubmission.inFlight'), 'lost response retry state');
+  const retryPayload = await evaluate('JSON.stringify(pendingSubmission.payload)');
+  assert.equal(await evaluate('practiceInterval'), null);
+  await evaluate('window.fetch=window.__submitFetch;document.getElementById("submit-attempt").click()');
+  await waitFor(() => evaluate('attemptSubmitted'), 'idempotent retry succeeds');
+  assert.equal(await evaluate('lastSubmittedRecord.id'), JSON.parse(retryPayload).attempt_id);
+  assert.ok(Math.abs((await evaluate('lastSubmittedRecord.duration_ms')) - JSON.parse(retryPayload).duration_ms) < 0.01);
+  await idle();
+  assert.equal(await evaluate('statsRecords.length'), priorRecords + 2);
+  // Force a lifecycle replacement to exercise callbacks even if a future UI path
+  // ever bypasses the visible lock. The response belongs to the old attempt.
+  for (const outcome of ['resolve', 'reject']) {
+    await click('retry');
+    await evaluate(`window.__submitFetch=window.fetch;window.__lateGate={};window.fetch=async(url,options)=>{if(url!=='/api/stats/submit')return window.__submitFetch(url,options);const response=await window.__submitFetch(url,options);return new Promise((resolve,reject)=>{window.__lateGate.resolve=()=>resolve(response);window.__lateGate.reject=()=>reject(new Error('stale response'))})}`);
+    await evaluate(`document.getElementById('submit-attempt').click()`);
+    await waitFor(() => evaluate('Boolean(window.__lateGate.resolve)'), 'saved response held after server write');
+    await evaluate('pendingSubmission=null;resetPracticeTimer();newQuestion()');
+    await idle();
+    const replacementId = await evaluate('attemptId');
+    await evaluate(`window.__lateGate.${outcome}()`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await evaluate('attemptId'), replacementId, `stale ${outcome} preserves replacement identity`);
+    assert.equal(await evaluate('attemptActive && !attemptSubmitted && practiceInterval !== null'), true, `stale ${outcome} preserves replacement timer`);
+    await evaluate('window.fetch=window.__submitFetch');
+  }
   assert.deepEqual(exceptions, []);
   const external = requests.filter(url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:'));
   assert.deepEqual(external, [], 'UI does not fetch external resources');
   console.log(JSON.stringify({status: 'PASS', baseline_fwhm_mev: baseline, browser: (await command('Browser.getVersion', {}, null)).product,
     drag_frames_before_release: duringDrag.length, desktop_layout_sizes: layoutSizes, readable_layouts: readableLayouts, narrow_layout_sizes: [[1024,768],[720,720],[390,844]],
-    checks: ['network starts and follows latest input without animation-frame gating in both modes', 'synchronous input coalescing with one in-flight request', 'full-path timing tooltip', 'all twenty control/step limits are 300', 'hell and custom difficulty bounds and exact compensation', 'custom drafts and invalid new preserve question, controls and timer', 'custom short/narrow layouts', 'old 120-limit backend rejected', 'all twenty initial steps are 1 meV', 'practice timer start/stop/restart and duplicate start', 'elapsed clock jump and hour/minute formatting', 'timer reset on new/retry/mode/refresh', 'timer does not simulate or alter question', 'timer respects tuning confirmation click', 'per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
+    checks: ['submission lifecycle lock, snapshot retry and stale callback protection', 'accumulated timer across repeated pauses and saved duration', 'post-review keyboard and wheel edits preserve stored history', 'paused and submitted inputs are read-only at mutation entries', 'network starts and follows latest input without animation-frame gating in both modes', 'synchronous input coalescing with one in-flight request', 'full-path timing tooltip', 'all twenty control/step limits are 300', 'hell and custom difficulty bounds and exact compensation', 'custom drafts and invalid new preserve question, controls and timer', 'custom short/narrow layouts', 'old 120-limit backend rejected', 'all twenty initial steps are 1 meV', 'practice timer start/stop/restart and duplicate start', 'elapsed clock jump and hour/minute formatting', 'timer reset on new/retry/mode/refresh', 'timer does not simulate or alter question', 'timer respects tuning confirmation click', 'per-term difficulty bounds for all twenty terms', 'clipping guidance and widening the field preserves answers', 'old shared-budget generator gives restart instruction', '20 controls with nine on the default page', 'fourth and fifth order pages retain cross-page superposition', 'paging without simulation requests', 'in-flight high-order frame survives page switch', 'page button stopping click does not click through', 'high-order wheel steps and snapshot undo', 'all-page zero', 'practice maximum orders 1 through 5', 'order drafts and retry preserve current question', '14 and 20 term exact compensation', 'high-order page visibility while tuning on desktop and narrow screens', 'old backend metadata gives restart instruction without frame request', 'slider and numeric updates', 'continuous pointer drag renders before release', 'single in-flight request', 'no control rollback', 'mode boundary ignores old frames', 'screenshot ordering with restored original dark palette', 'keyboard selection without coefficient edits', 'Enter or double-arrow double-click activation', 'arrow step scaling and limits without simulation', 'left/right single-step tuning with current step and shared wheel transaction', 'keyboard bounds, invalid steps, modifiers and repeats', 'keyboard confirms, snapshot undo and late-frame protection', 'Enter commits and Escape restores keyboard-start snapshot', 'repeat Enter and confirming double-click do not re-enter', 'scene editors retain native keys', 'answer table follows display order', 'global wheel capture without page scroll', 'only selected coefficient changes', 'per-row wheel step', 'wheel direction and bounds', 'invalid wheel step rejected', 'inactive wheel preserves page scroll', 'left-click commits without click-through', 'Escape restores current session snapshot', 'late frame cannot overwrite rollback', 'practice rollback preserves question and feedback', 'blur ends capture preserving values', 'superposition', 'gamma preserves spectrum', 'zero baseline', 'hidden exercise', 'reveal', 'exact compensation', 'retry', 'new question', 'nine controls and both plots in desktop viewport', 'expanded settings and feedback do not displace controls', 'responsive canvas redraw without simulation', 'high-DPI canvas backing buffers', 'D03 tuning without scrolling on laptop', 'all nine controls with sticky plots in tested narrow viewports', 'keyboard navigation after page change and lower-order selection boundaries', 'narrow layout', 'no JS exceptions', 'no external UI requests'],
     screenshots: [`${artifactDirectory}/blind-attempt-result.png`, `${artifactDirectory}/blind-review-history.png`, `${artifactDirectory}/difficulty-custom.png`, `${artifactDirectory}/difficulty-medium-20.png`, `${artifactDirectory}/browser-desktop.png`, `${artifactDirectory}/browser-narrow.png`, `${artifactDirectory}/browser-order-4.png`, `${artifactDirectory}/browser-order-5.png`, `${artifactDirectory}/order-4-390x844.png`, `${artifactDirectory}/order-5-390x844.png`], temporary_profile: profile}, null, 2));
 } finally {
   if (socket) socket.close();

@@ -20,7 +20,9 @@ Linux 本地 Chromium 检查中，标准自由模式输入到 Canvas 绘图中�
 
 macOS 成品为按处理器架构区分的 `EELS-Practice.app`，使用系统默认浏览器，不内置 Electron/Chromium。解压整个 ZIP 后双击 App 即可；关闭最后一个程序页面后，后台通常约 5～10 秒退出。使用端无需另装 Python 或 Node。
 
-当前 Apple Silicon 成品：`processed/releases/macos-arm64-20260929-105618-383939/EELS-Practice-macOS-arm64.zip`（16.8 MiB，解压后 73.5 MiB；SHA256 `8e50db133013c89fb93474457a1d807d5133d661854b47b945dc9921ee774b68`）。已安装到 `/Applications/EELS-Practice.app`，包含下述第二版盲调复盘。构建时 67 项 Python 回归通过、1 项按条件跳过；冻结包与安装版离线自检、签名结构校验通过；源码服务的 Chrome 浏览器回归通过。**安装版的双击启动、默认浏览器和关闭页面退出尚未单独验收**，不能以离线自检代替。旧 App 与战绩备份分别位于 `processed/backups/app-before-blind-review-20260929.zip` 和 `processed/backups/stats-before-blind-review-20260929.sqlite3`；原有两条战绩未被改写。Intel Mac 需在 Intel Mac 上运行同一脚本生成 `x86_64` 成品；arm64 包不是通用包。
+此前已安装的 Apple Silicon 成品：`processed/releases/macos-arm64-20260929-105618-383939/EELS-Practice-macOS-arm64.zip`（16.8 MiB，解压后 73.5 MiB；SHA256 `8e50db133013c89fb93474457a1d807d5133d661854b47b945dc9921ee774b68`）。已安装到 `/Applications/EELS-Practice.app`，包含下述第二版盲调复盘。构建时 67 项 Python 回归通过、1 项按条件跳过；冻结包与安装版离线自检、签名结构校验通过；源码服务的 Chrome 浏览器回归通过。**安装版的双击启动、默认浏览器和关闭页面退出尚未单独验收**，不能以离线自检代替。旧 App 与战绩备份分别位于 `processed/backups/app-before-blind-review-20260929.zip` 和 `processed/backups/stats-before-blind-review-20260929.sqlite3`；原有两条战绩未被改写。Intel Mac 需在 Intel Mac 上运行同一脚本生成 `x86_64` 成品；arm64 包不是通用包。
+
+本轮 PR 可靠性修复的新构建：`processed/releases/macos-arm64-pr-review-final-20260929/EELS-Practice-macOS-arm64.zip`，SHA256 `bf18014f3b263f6273552131aed9726455292d6164cfeb46f94645b513af9fdc`。构建时 69 项 Python 测试运行、1 项条件跳过；冻结包离线自检和 ad-hoc 签名结构校验通过。新包未替换 `/Applications/EELS-Practice.app`，已安装版不含本轮修复。新包的默认浏览器、刷新重连和关闭页面退出验收尚未执行；Python 3.10 兼容性仅有当前 Python 3.13 下的分块摘要测试，尚未在 3.10 实测。
 
 重新构建须在对应架构的 macOS 与独立 Python ≥3.10 venv 中执行：
 

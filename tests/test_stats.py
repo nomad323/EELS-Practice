@@ -1,4 +1,6 @@
 import tempfile
+import copy
+import json
 from pathlib import Path
 import unittest
 
@@ -6,6 +8,30 @@ from eels_sim.server import Application
 
 
 class BlindPracticeStatsTests(unittest.TestCase):
+    def test_constructed_legacy_record_is_read_without_rewrite(self):
+        self.app.dispatch("/api/frame", self.request)
+        exercise = self.app.sessions[self.token].exercise
+        modern = self.submit("modern-first", self.process(exercise))
+        legacy = copy.deepcopy(modern)
+        legacy["id"] = "constructed-legacy"
+        legacy["stats_version"] = 1
+        legacy.pop("comparison", None)
+        for outcome in legacy["term_outcomes"].values():
+            outcome.pop("initial", None)
+            outcome.pop("improved", None)
+        original_json = json.dumps(legacy, ensure_ascii=False)
+        store = self.app._stats_store
+        q = legacy["question"]
+        store.connection.execute("INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                 (legacy["id"], legacy["submitted_at"], int(legacy["assisted"]),
+                                  q["max_order"], q["term_count"], q["difficulty"], original_json))
+        store.connection.commit()
+        self.app.dispatch("/api/frame", {**self.request, "action": "retry"})
+        self.submit("modern-after-legacy", self.process(exercise))
+        self.assertIn(legacy, self.app.dispatch("/api/stats/list", {"session": self.token, "limit": "all"})["attempts"])
+        stored_json = store.connection.execute("SELECT record_json FROM attempts WHERE id=?", (legacy["id"],)).fetchone()[0]
+        self.assertEqual(stored_json, original_json)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="eels-stats-")
         self.path = Path(self.temporary.name) / "records.sqlite3"

@@ -16,6 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "EELS-Practice"
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def architecture():
     machine = platform.machine().lower()
     return {"arm64": "arm64", "aarch64": "arm64", "x86_64": "x86_64"}.get(machine)
@@ -117,8 +125,7 @@ def main():
     archive = output / f"{APP_NAME}-macOS-{arch}.zip"
     subprocess.run(["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
                     str(package), str(archive)], check=True)
-    with archive.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    digest = sha256_file(archive)
     report = {
         "python": sys.version,
         "platform": platform.platform(),
