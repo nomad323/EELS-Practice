@@ -12,6 +12,7 @@ import numpy as np
 
 from .model import Config, CONTROL_LIMIT, MAX_ORDER, MODEL_VERSION, POWERS, TERMS, coefficients, simulate, terms_through
 from .presentation import export_npz, frame, grayscale
+from .stats import STATS_VERSION, StatsStore, build_attempt_record
 from .training import CUSTOM_AMPLITUDE_MIN, DIFFICULTY, GENERATOR_VERSION, Exercise, checked_controls, new_exercise
 
 WEB = Path(__file__).parent / "web"
@@ -27,15 +28,34 @@ class Session:
     revealed: bool = False
     last_result: object = None
     last_labels: dict | None = None
+    initial_result: object = None
+    revealed_ever: bool = False
+    attempt_submitted: bool = False
+    submitted_record: dict | None = None
     touched: float = field(default_factory=time.monotonic)
     lock: object = field(default_factory=threading.Lock)
 
 
 class Application:
-    def __init__(self):
+    def __init__(self, stats_path=None):
         self.sessions = {}
         self.lock = threading.Lock()
         self.compute_lock = threading.Lock()
+        self.stats_path = stats_path
+        self._stats_store = None
+
+    @property
+    def stats_store(self):
+        with self.lock:
+            if self._stats_store is None:
+                self._stats_store = StatsStore(self.stats_path)
+            return self._stats_store
+
+    def close(self):
+        with self.lock:
+            store, self._stats_store = self._stats_store, None
+        if store is not None:
+            store.close()
 
     def create_session(self):
         with self.lock:
@@ -54,7 +74,7 @@ class Application:
             if data:
                 raise ValueError("创建会话无需参数")
             return self.create_session()
-        if path not in ("/api/frame", "/api/export"):
+        if path not in ("/api/frame", "/api/export", "/api/stats/submit", "/api/stats/list"):
             raise KeyError("接口不存在")
         token = data.get("session")
         if not isinstance(token, str):
@@ -65,11 +85,53 @@ class Application:
                 raise ValueError("会话已失效，请刷新页面")
             session.touched = time.monotonic()
         with session.lock:
+            if path == "/api/stats/list":
+                if set(data) - {"session", "limit"}:
+                    raise ValueError("历史记录请求中含未知字段")
+                return {"attempts": self.stats_store.list(data.get("limit", 200))}
+            if path == "/api/stats/submit":
+                return self.submit_attempt(session, data)
             if path == "/api/export":
                 if set(data) != {"session"} or session.last_result is None:
                     raise ValueError("请先生成一帧图像，再导出")
+                if session.last_labels is not None and "eligible_terms" in session.last_labels:
+                    session.revealed_ever = True  # Practice NPZ contains the hidden labels.
                 return export_npz(session.last_result, session.last_labels)
             return self.render(session, data)
+
+    def submit_attempt(self, session, data):
+        allowed = {"session", "attempt_id", "duration_ms", "started_at", "process"}
+        if set(data) != allowed:
+            raise ValueError("提交记录字段不完整或含未知字段")
+        if session.exercise is None or session.last_result is None or session.last_labels is None \
+                or session.initial_result is None or "eligible_terms" not in session.last_labels:
+            raise ValueError("请先开始一题盲调练习")
+        if session.attempt_submitted:
+            if session.submitted_record is not None and data["attempt_id"] == session.submitted_record["id"]:
+                return {"attempt": session.submitted_record}
+            raise ValueError("本次练习已经提交；请重试或开始新题")
+        record = build_attempt_record(
+            attempt_id=data["attempt_id"], duration_ms=data["duration_ms"],
+            started_at=data["started_at"], process=data["process"],
+            exercise=session.exercise, feedback=session.last_labels,
+            initial_result=session.initial_result, final_result=session.last_result,
+            assisted=session.revealed_ever)
+        # One fixed display transform and shared intensity ceiling make the
+        # two saved views visually comparable, independent of the live slider.
+        ceiling = max(float(session.initial_result.counts.max()),
+                      float(session.last_result.counts.max()), 1e-12)
+        record["comparison"] = {
+            "gamma": 0.5, "display_vmax": ceiling,
+            "initial": frame(session.initial_result, 0.5, ceiling),
+            "final": frame(session.last_result, 0.5, ceiling),
+        }
+        self.stats_store.save(record)
+        session.attempt_submitted = True
+        session.submitted_record = record
+        # The review itself contains label-derived residuals, even though the
+        # full answer remains hidden. A retry of this seed is assisted.
+        session.revealed_ever = True
+        return {"attempt": record}
 
     def render(self, session, data):
         allowed = {"session", "mode", "action", "controls", "config", "seed", "difficulty", "custom_amplitude", "term_count", "max_order", "gamma", "vmax"}
@@ -84,20 +146,30 @@ class Application:
         controls = checked_controls(data.get("controls", {}))
         # Validate presentation before mutating an exercise's state.
         grayscale(np.zeros((1, 1)), data.get("gamma", 0.5), data.get("vmax"))
+        reset_attempt = False
         if mode == "practice":
             if action == "new" or session.exercise is None:
                 session.exercise = new_exercise(data.get("seed", 42), data.get("difficulty", "medium"),
                                                 data.get("term_count", 9), config, max_order,
                                                 custom_amplitude=data.get("custom_amplitude"))
                 session.revealed = False
+                session.revealed_ever = False
+                session.attempt_submitted = False
+                session.submitted_record = None
+                reset_attempt = True
                 controls = coefficients()
             if action == "retry":
                 controls = coefficients()
                 session.revealed = False
+                # The same seed is no longer blind once its labels were shown.
+                session.attempt_submitted = False
+                session.submitted_record = None
+                reset_attempt = True
             # Updates use the actual question's order, not unsaved UI settings.
             checked_controls(controls, session.exercise.max_order)
             if action == "reveal":
                 session.revealed = True
+                session.revealed_ever = True
             if action == "hide":
                 session.revealed = False
             effective = session.exercise.residual(controls)
@@ -118,6 +190,8 @@ class Application:
             if session.revealed:
                 response["feedback"] = labels
         session.last_result, session.last_labels = result, labels
+        if reset_attempt:
+            session.initial_result = result
         return response
 
 
@@ -188,6 +262,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response(200, {"model_version": MODEL_VERSION, "terms": TERMS, "powers": POWERS,
                                      "max_order": MAX_ORDER, "default_practice_order": 3,
                                      "generator_version": GENERATOR_VERSION, "difficulties": DIFFICULTY,
+                                     "stats_version": STATS_VERSION,
                                      "custom_amplitude_min": CUSTOM_AMPLITUDE_MIN,
                                      "control_limit": CONTROL_LIMIT, "defaults": asdict(Config())})
         else:
@@ -223,9 +298,15 @@ class Handler(BaseHTTPRequestHandler):
 class LocalServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=8765, *, handler_class=Handler):
-        self.application = Application()
+    def __init__(self, port=8765, *, handler_class=Handler, stats_path=None):
+        self.application = Application(stats_path=stats_path)
         super().__init__(("127.0.0.1", port), handler_class)
+
+    def server_close(self):
+        try:
+            super().server_close()
+        finally:
+            self.application.close()
 
 
 def main():

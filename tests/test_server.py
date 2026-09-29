@@ -228,6 +228,7 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(meta['max_order'], 5)
             self.assertEqual(meta['default_practice_order'], 3)
             self.assertEqual(meta['generator_version'], GENERATOR_VERSION)
+            self.assertEqual(meta['stats_version'], 2)
             self.assertEqual(meta['control_limit'], 300)
             self.assertEqual(meta['difficulties'], {'easy': 20, 'medium': 45, 'hard': 90, 'hell': 300})
             self.assertEqual(meta['custom_amplitude_min'], 0.1)

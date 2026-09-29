@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import secrets
 import sys
+import tempfile
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -129,7 +130,8 @@ def run(opener=webbrowser.open, lifetime=None):
 
 def self_test(report_path):
     """Offline packaged-binary check. Never opens a browser or connects hardware."""
-    server = LocalServer(0)
+    temporary = tempfile.TemporaryDirectory(prefix="eels-stats-self-")
+    server = LocalServer(0, stats_path=Path(temporary.name) / "practice.sqlite3")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -154,14 +156,25 @@ def self_test(report_path):
         with np.load(io.BytesIO(request("/api/export", {"session": session})), allow_pickle=False) as sample:
             if not np.array_equal(sample["spectrum"], sample["counts"].sum(axis=0)):
                 raise RuntimeError("NPZ 积分谱自检失败")
+        practice = json.loads(request("/api/frame", {"session": session, "mode": "practice", "action": "new",
+                                                     "config": {"n_rays": 4096}}))
+        if "feedback" in practice:
+            raise RuntimeError("盲调答案提前暴露")
+        submitted = json.loads(request("/api/stats/submit", {"session": session,
+            "attempt_id": "packaged-self-test", "duration_ms": 1000,
+            "started_at": "2026-09-22T00:00:00Z", "process": {"terms": {}, "scene_changed": False}}))
+        history = json.loads(request("/api/stats/list", {"session": session}))
+        if submitted["attempt"]["id"] != "packaged-self-test" or len(history["attempts"]) != 1:
+            raise RuntimeError("盲调 SQLite 战绩自检失败")
         report = {"status": "PASS", "frozen": bool(getattr(sys, "frozen", False)),
                   "model_version": meta["model_version"], "baseline_fwhm_mev": fwhm,
-                  "checks": ["web assets", "loopback HTTP", "NumPy simulation", "Pillow PNG", "NPZ export"]}
+                  "checks": ["web assets", "loopback HTTP", "NumPy simulation", "Pillow PNG", "NPZ export", "blind stats SQLite"]}
         Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        temporary.cleanup()
 
 
 def main():

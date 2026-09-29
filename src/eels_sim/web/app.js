@@ -14,6 +14,26 @@ let revision = 0, contextRevision = 0, pumpQueued = false, lockedVmax = null, fa
 let latestInputAt = 0;
 let wheelTarget = null, wheelStartControls = null, consumeLeftClick = false, suppressDoubleClick = false;
 let practiceStartedAt = null, practiceElapsed = 0, practiceInterval = null;
+let attemptPaused = false;
+let attemptActive = false, attemptSubmitted = false, attemptId = null, attemptStartedAt = null;
+let postReviewTune = false;
+let lastSubmittedRecord = null, pendingAnswerScroll = false;
+let attemptTerms = {}, activeTuneStartedAt = null, focusStartedAt = null, attemptSceneChanged = false, statsRecords = [], currentDrill = null;
+
+function emptyAttemptTerms() {
+  return Object.fromEntries(names.map(name => [name, {focus_ms: 0, active_ms: 0, visits: 0, adjustments: 0,
+    path_abs: 0, reversals: 0, cancelled: 0, step_changes: 0, first_delta: 0, _last_direction: 0}]));
+}
+function attemptUuid() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-')}`;
+}
+function formatDuration(milliseconds) {
+  const seconds = Math.max(0, milliseconds) / 1000;
+  const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+  const remainder = seconds - Math.floor(seconds / 60) * 60;
+  return hours ? `${String(hours).padStart(2,"0")}:${String(minutes).padStart(2,"0")}:${remainder.toFixed(1).padStart(4,"0")}`
+    : `${minutes}:${remainder.toFixed(1).padStart(4,"0")}`;
+}
 
 function renderPracticeTimer() {
   // Measure elapsed time, not interval ticks: background throttling must not
@@ -26,19 +46,69 @@ function renderPracticeTimer() {
 function resetPracticeTimer() {
   clearInterval(practiceInterval); practiceInterval = null;
   practiceStartedAt = null; practiceElapsed = 0;
+  attemptPaused = false; document.body.classList.remove("attempt-paused"); $("pause-banner").hidden = true;
+  attemptActive = false; attemptSubmitted = false; postReviewTune = false; lastSubmittedRecord = null; attemptId = null; attemptStartedAt = null;
+  attemptTerms = emptyAttemptTerms(); activeTuneStartedAt = null; focusStartedAt = null; attemptSceneChanged = false;
+  $("attempt-result").hidden = true;
   renderPracticeTimer(); buttonState();
 }
-function startPracticeTimer() {
-  if ($("mode").value !== "practice" || practiceStartedAt !== null || $("timer-start").disabled) return;
-  practiceElapsed = 0; practiceStartedAt = performance.now();
+function startPracticeTimer(force = false) {
+  if ($("mode").value !== "practice" || attemptActive || attemptSubmitted || (!force && (running || dirty)) || failed || !lastFrame?.question) return;
+  practiceElapsed = 0; practiceStartedAt = performance.now(); attemptStartedAt = new Date().toISOString();
+  attemptActive = true; attemptId = attemptUuid(); attemptTerms = emptyAttemptTerms(); attemptSceneChanged = false;
+  focusStartedAt = selectedTerm ? performance.now() : null;
   practiceInterval = setInterval(renderPracticeTimer, 100);
   renderPracticeTimer(); buttonState();
 }
-function stopPracticeTimer() {
-  if (practiceStartedAt === null) return;
-  practiceElapsed = performance.now() - practiceStartedAt; practiceStartedAt = null;
-  clearInterval(practiceInterval); practiceInterval = null;
-  renderPracticeTimer(); buttonState();
+function togglePracticePause() {
+  if (!attemptActive) return;
+  if (attemptPaused) {
+    attemptPaused = false; practiceStartedAt = performance.now();
+    focusStartedAt = selectedTerm ? performance.now() : null;
+    practiceInterval = setInterval(renderPracticeTimer, 100);
+  } else {
+    finishWheel(); endFocusTerm(selectedTerm);
+    practiceElapsed += performance.now() - practiceStartedAt;
+    practiceStartedAt = null; clearInterval(practiceInterval); practiceInterval = null;
+    attemptPaused = true;
+  }
+  document.body.classList.toggle("attempt-paused", attemptPaused);
+  $("pause-banner").hidden = !attemptPaused;
+  renderPracticeTimer(); updatePages(); buttonState();
+}
+function ensureAttemptStarted() {
+  if (attemptPaused) return false;
+  if ($("mode").value === "practice" && !attemptActive && !attemptSubmitted) startPracticeTimer();
+  return attemptActive;
+}
+function recordAdjustment(name, before, after) {
+  if (before === after || !ensureAttemptStarted()) return;
+  const row = attemptTerms[name], delta = after - before, direction = Math.sign(delta);
+  row.adjustments++; row.path_abs += Math.abs(delta);
+  if (!row.first_delta) row.first_delta = delta;
+  if (row._last_direction && direction !== row._last_direction) row.reversals++;
+  row._last_direction = direction;
+}
+function beginActiveTerm(name) {
+  if (!ensureAttemptStarted()) return;
+  const row = attemptTerms[name]; row.visits++; activeTuneStartedAt = performance.now();
+}
+function endActiveTerm(name, cancelled = false) {
+  if (!attemptActive || !name || activeTuneStartedAt === null) return;
+  attemptTerms[name].active_ms += Math.max(0, performance.now() - activeTuneStartedAt);
+  if (cancelled) attemptTerms[name].cancelled++;
+  activeTuneStartedAt = null;
+}
+function endFocusTerm(name) {
+  if (attemptActive && name && focusStartedAt !== null) {
+    attemptTerms[name].focus_ms += Math.max(0, performance.now() - focusStartedAt);
+  }
+  focusStartedAt = null;
+}
+function attemptProcess() {
+  return {scene_changed: attemptSceneChanged, terms: Object.fromEntries(names.filter(name => orders[name] <= activeOrder).map(name => {
+    const {_last_direction, ...row} = attemptTerms[name]; return [name, row];
+  }))};
 }
 
 async function post(path, data, binary = false) {
@@ -84,7 +154,7 @@ function updatePages() {
   const visible = pageTerms(currentPage);
   names.forEach(n => {
     $(`row-${n}`).hidden = !visible.includes(n);
-    $(`row-${n}`).querySelectorAll("input,button").forEach(el => el.disabled = orders[n] > activeOrder);
+    $(`row-${n}`).querySelectorAll("input,button").forEach(el => el.disabled = orders[n] > activeOrder || (attemptSubmitted && !postReviewTune) || attemptPaused);
   });
   [3, 4, 5].forEach(page => {
     $(`page-${page}`).disabled = !pageTerms(page).length;
@@ -96,6 +166,10 @@ function updatePages() {
 }
 function selectTerm(name, focus = false) {
   if (!pageTerms(currentPage).includes(name) || (wheelTarget && wheelTarget !== name)) return;
+  if (name !== selectedTerm) {
+    endFocusTerm(selectedTerm);
+    if (attemptActive) focusStartedAt = performance.now();
+  }
   selectedTerm = name; pageSelection[currentPage] = name;
   names.forEach(n => {
     const row = $(`row-${n}`);
@@ -140,7 +214,10 @@ function newQuestion() {
   catch (error) { $("error").textContent = error.message; return; }
   finishWheel(); activeOrder = number("max-order"); resetPracticeTimer(); updatePages(); zeroControls(); request("new");
 }
-function zeroControls() { controls = Object.fromEntries(names.map(n => [n, 0])); syncControls(); }
+function zeroControls(track = false) {
+  if (track) names.filter(name => orders[name] <= activeOrder).forEach(name => recordAdjustment(name, controls[name], 0));
+  controls = Object.fromEntries(names.map(n => [n, 0])); syncControls();
+}
 function updateWheelBanner() {
   $("wheel-session").hidden = wheelTarget === null;
   if (wheelTarget) $("wheel-session").textContent = `${wheelTarget} = ${controls[wheelTarget].toFixed(2)} · 步长 ${$(`wheel-step-${wheelTarget}`).value} · ↑↓ 步长 · ←→ 单步 · Enter / 单击确认 · Esc 撤销`;
@@ -154,18 +231,20 @@ function updateWheelUI() {
   updateWheelBanner();
 }
 function startWheel(name) {
-  if (!name || wheelTarget || !pageTerms(currentPage).includes(name) || !wheelNote(name)) return;
+  if (!name || wheelTarget || attemptSubmitted || !pageTerms(currentPage).includes(name) || !wheelNote(name)) return;
   selectTerm(name, true);
   wheelTarget = name;
   // Snapshot the current controls, not a possibly older rendered frame. A wheel
   // session changes only one coefficient; Escape restores this transaction.
   wheelStartControls = {...controls};
+  beginActiveTerm(name);
   updateWheelUI();
 }
 function finishWheel(rollback = false) {
   if (!wheelTarget) return;
-  const initial = wheelStartControls;
+  const initial = wheelStartControls, finishedTarget = wheelTarget;
   wheelTarget = null; wheelStartControls = null;
+  endActiveTerm(finishedTarget, rollback);
   if (rollback) { controls = {...initial}; syncControls(); }
   updateWheelUI();
   // Invalidate any in-flight tuning frame before restoring the plot/spectrum.
@@ -189,6 +268,7 @@ function adjustWheelStep(direction) {
   const units = Math.round(Number(step.value)*100);
   step.value = String(Math.max(1, Math.min(meta.control_limit*100,
     direction > 0 ? units*10 : Math.round(units/10)))/100);
+  if (attemptActive) attemptTerms[wheelTarget].step_changes++;
   wheelNote(wheelTarget); updateWheelBanner();
 }
 function nudgeCoefficient(direction) {
@@ -199,6 +279,7 @@ function nudgeCoefficient(direction) {
   const units = Math.round(controls[name]*100) + direction*Math.round(step*100);
   const next = Math.max(-meta.control_limit*100, Math.min(meta.control_limit*100, units))/100;
   if (next === controls[name]) return;
+  recordAdjustment(name, controls[name], next);
   controls[name] = next; syncControls(); updateWheelBanner(); schedule();
 }
 function buildControls() {
@@ -215,11 +296,17 @@ function buildControls() {
     const input = document.createElement("input"); input.type = "number"; input.id = `value-${name}`; input.setAttribute("aria-label", `${name} 数值`);
     [slider, input].forEach(el => { el.min = -meta.control_limit; el.max = meta.control_limit; el.step = "0.01"; el.value = "0"; });
     const reset = document.createElement("button"); reset.textContent = "↺"; reset.title = `归零 ${name}`; reset.setAttribute("aria-label", reset.title);
-    slider.addEventListener("input", () => { controls[name] = Number(slider.value); input.value = slider.value; schedule(); });
-    input.addEventListener("input", () => {
-      if (input.checkValidity() && input.value !== "") { controls[name] = Number(input.value); slider.value = input.value; schedule(); }
+    slider.addEventListener("input", () => {
+      const next = Number(slider.value); recordAdjustment(name, controls[name], next);
+      controls[name] = next; input.value = slider.value; schedule();
     });
-    reset.addEventListener("click", () => { controls[name] = 0; syncControls(); request(); });
+    input.addEventListener("input", () => {
+      if (input.checkValidity() && input.value !== "") {
+        const next = Number(input.value); recordAdjustment(name, controls[name], next);
+        controls[name] = next; slider.value = input.value; schedule();
+      }
+    });
+    reset.addEventListener("click", () => { recordAdjustment(name, controls[name], 0); controls[name] = 0; syncControls(); request(); });
     // Keep step editors and activation buttons in stable positions.
     const settings = document.createElement("div"); settings.className = "wheel-settings"; settings.id = `wheel-settings-${name}`;
     const toggle = document.createElement("button"); toggle.id = `wheel-toggle-${name}`; toggle.className = "wheel-toggle";
@@ -236,7 +323,10 @@ function buildControls() {
     step.setAttribute("aria-label", `${name} 滚轮步长 / meV`); stepLabel.append(step);
     const note = document.createElement("span"); note.id = `wheel-note-${name}`; note.className = "wheel-note"; note.setAttribute("aria-live", "polite");
     step.setAttribute("aria-describedby", note.id);
-    step.addEventListener("input", () => { wheelNote(name); updateWheelBanner(); });
+    step.addEventListener("input", () => {
+      if (attemptActive) attemptTerms[name].step_changes++;
+      wheelNote(name); updateWheelBanner();
+    });
     settings.append(stepLabel, toggle, note);
     row.append(label, slider, input, reset, settings); $("sliders").append(row);
   });
@@ -263,9 +353,12 @@ function request(action = "update") {
   pump();
 }
 function buttonState() {
-  $("timer-start").disabled = $("mode").value !== "practice" || practiceStartedAt !== null || running || dirty || failed || !lastFrame?.question;
-  $("timer-stop").disabled = practiceStartedAt === null;
+  $("timer-start").textContent = attemptPaused ? "继续作答" : "暂停";
+  $("timer-start").disabled = !attemptActive || running || dirty || failed;
+  $("submit-attempt").disabled = !attemptActive || attemptPaused || running || dirty || failed || !lastFrame?.question;
   ["new-question", "random-question", "retry", "reveal"].forEach(id => $(id).disabled = running);
+  $("start-drill").disabled = running || dirty || failed || !currentDrill;
+  $("zero").disabled = (attemptSubmitted && !postReviewTune) || attemptPaused || running;
   ["export", "save-png"].forEach(id => $(id).disabled = running || dirty || failed || !lastFrame);
 }
 async function pump() {
@@ -295,6 +388,7 @@ async function pump() {
         lastFrame = response; lastImage = image;
         if ($("lock-intensity").checked && lockedVmax === null) lockedVmax = response.display_vmax;
         render(response, image); failed = false; $("error").textContent = "";
+        if ((action === "new" || action === "retry") && version === revision && !document.hidden) startPracticeTimer(true);
         // The visible ms remains backend time; expose the full path separately
         // so browser/transport delay is not mistaken for simulation time.
         $("status").title = `本帧输入到绘图 ${(performance.now()-inputAt).toFixed(1)} ms；请求/传输/JSON ${(receivedAt-sentAt).toFixed(1)} ms（含后端 ${response.elapsed_ms.toFixed(1)} ms）。不含屏幕实际呈现延迟。`;
@@ -395,6 +489,197 @@ function render(frame, image) {
         const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
       }); return row;
     }));
+    if (pendingAnswerScroll) { pendingAnswerScroll = false; $("feedback").scrollIntoView({block: "start"}); }
+  }
+}
+function scoreCard(label, value, note) {
+  const card = document.createElement("div"), caption = document.createElement("span");
+  const strong = document.createElement("strong"), small = document.createElement("small");
+  caption.textContent = label; strong.textContent = value; small.textContent = note;
+  card.append(caption, strong, small); return card;
+}
+function improved(item) {
+  return item.active && Math.abs(item.residual) < Math.abs(item.initial) - 1e-9;
+}
+function improvementCount(record) {
+  return Object.values(record.term_outcomes).filter(improved).length;
+}
+function reviewInsight(record) {
+  const m = record.metrics;
+  if (m.final_clipped_fraction > 0.001) return `终点仍有 ${(100*m.final_clipped_fraction).toFixed(2)}% 的信号落在能量视野外；峰宽可能被裁切影响，先检查视野，再判断调节效果。`;
+  const pending = Object.entries(record.term_outcomes).filter(([, item]) => item.active &&
+    Math.abs(item.residual) >= Math.max(2, 0.1*Math.abs(item.initial)))
+    .sort((a,b) => Math.abs(b[1].residual)-Math.abs(a[1].residual));
+  if (pending.length) return `${pending[0][0]} 的最终残差为 ${fmt(pending[0][1].residual)} meV；这是本题最大的未消残差，可先回看它的调节过程。`;
+  if (m.initial_fwhm_mev !== null && m.final_fwhm_mev !== null)
+    return `积分谱 FWHM 从 ${fmt(m.initial_fwhm_mev)} 变为 ${fmt(m.final_fwhm_mev)} meV；对照光斑与谱线确认这个变化是否符合你的目标。`;
+  return `本题有 ${improvementCount(record)}/${record.score.hidden_count} 个隐藏项的系数误差减小；请对照起点和终点判断图像变化。`;
+}
+function reviewLines(record) {
+  const score = record.score, outcomes = record.term_outcomes;
+  const eligible = Object.keys(outcomes), zeroCount = eligible.length - score.hidden_count;
+  const lines = [];
+  const pending = eligible.filter(name => outcomes[name].active && !improved(outcomes[name]));
+  if (pending.length) lines.push(`误差未减小的隐藏项：${pending.join("、")}。这里比较的是生成标签和终点系数，不代表单张图能唯一反演参数。`);
+  else lines.push(`本题 ${improvementCount(record)}/${score.hidden_count} 个隐藏项的系数误差减小。`);
+  if (zeroCount) lines.push(`本题 ${zeroCount} 个零项，试探过 ${score.false_positive_count} 个；“试探过”也包含后来归零，不能单独当成错误。`);
+  else lines.push("本题所有候选项都非零，尚不能检验排除零项的能力。");
+  const wrongDirection = eligible.filter(name => outcomes[name].active && outcomes[name].first_direction_correct === false);
+  if (wrongDirection.length) lines.push(`初次试探方向与生成标签相反：${wrongDirection.join("、")}。试探本身可能是有意的，建议结合后续折返与残差观察。`);
+  const largeResidual = eligible.filter(name => outcomes[name].active &&
+    Math.abs(outcomes[name].residual) >= Math.max(2, 0.1*Math.abs(outcomes[name].initial)));
+  if (largeResidual.length) lines.push(`最终残差达到初始幅度的 10%，且不少于 2 meV：${largeResidual.join("、")}。可优先复看这些项。`);
+  const mostReversed = eligible.filter(name => outcomes[name].reversals > 0)
+    .sort((a,b) => outcomes[b].reversals - outcomes[a].reversals).slice(0,2);
+  if (mostReversed.length) lines.push(`折返较多的项：${mostReversed.map(name => `${name} ${outcomes[name].reversals} 次`).join("、")}；折返是探索线索，不按次数给能力打分。`);
+  if (record.scene_changed) lines.push("作答中改变过场景；图像表现和速度不与标准场景题直接比较。");
+  if (record.assisted) lines.push("提交前看过答案或导出过标签；本次保留在历史中，不进入纯盲调汇总。");
+  return lines;
+}
+function renderReview(list, record) {
+  list.replaceChildren(...reviewLines(record).map(line => { const item = document.createElement("li"); item.textContent = line; return item; }));
+}
+function renderTermRows(body, record) {
+  body.replaceChildren(...names.filter(name => name in record.term_outcomes).map(name => {
+    const item = record.term_outcomes[name], row = document.createElement("tr");
+    const kind = item.active ? (improved(item) ? "隐藏项 · 误差减小" : "隐藏项 · 未改善") : (item.touched ? "零项 · 试探过" : "零项");
+    [name, kind, formatDuration(item.focus_ms), formatDuration(item.active_ms), item.visits, item.adjustments, item.reversals,
+      Number(item.residual).toFixed(3)].forEach(value => { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); });
+    if (item.active && !improved(item) || !item.active && item.touched) row.classList.add("attention-row");
+    return row;
+  }));
+}
+function renderAttemptResult(record) {
+  const score = record.score, blind = !record.assisted;
+  $("attempt-result").hidden = false;
+  $("attempt-badge").textContent = blind ? "纯盲调" : "辅助练习 · 提交前看过答案";
+  $("attempt-badge").className = blind ? "result-badge blind" : "result-badge assisted";
+  const comparison = $("attempt-comparison"); comparison.replaceChildren();
+  if (record.comparison) {
+    const sharedMax = Math.max(...record.comparison.initial.spectrum, ...record.comparison.final.spectrum, 1)*1.1;
+    [["起点", record.comparison.initial], ["终点", record.comparison.final]].forEach(([label, view]) => {
+      const panel = document.createElement("div"), title = document.createElement("h3"), image = document.createElement("img"), canvas = document.createElement("canvas");
+      title.textContent = label; image.src = `data:image/png;base64,${view.image_png}`; image.alt = `${label}能量—角度光斑`;
+      canvas.width = 440; canvas.height = 120; canvas.setAttribute("aria-label", `${label}积分能谱`);
+      const context = canvas.getContext("2d"), values = view.spectrum;
+      context.fillStyle = "#080a0c"; context.fillRect(0, 0, 440, 120);
+      context.strokeStyle = "#dfe8f2"; context.lineWidth = 1.5; context.beginPath();
+      values.forEach((value, index) => { const x = index/(values.length-1)*439, y = 115-value/sharedMax*110; if (index) context.lineTo(x,y); else context.moveTo(x,y); }); context.stroke();
+      const axes = document.createElement("p"); axes.className = "hint";
+      axes.textContent = `光斑 E: ${fmt(view.energy_mev[0],1)}…${fmt(view.energy_mev.at(-1),1)} meV，v: ${fmt(view.y_range[0],2)}…${fmt(view.y_range[1],2)}；谱线纵轴 0…${sharedMax.toFixed(0)} 计数。`;
+      panel.append(title, image, canvas, axes); comparison.append(panel);
+    });
+  } else {
+    const note = document.createElement("p"); note.className = "hint";
+    note.textContent = "这条旧记录未保存起点与终点图像；仅显示当时保存的数值，不补造图像。"; comparison.append(note);
+  }
+  $("attempt-scorecards").replaceChildren(
+    scoreCard("积分谱 FWHM", `${fmt(record.metrics.initial_fwhm_mev)} → ${fmt(record.metrics.final_fwhm_mev)}`, "meV · 起点 → 终点"),
+    scoreCard("RMS 能量宽度", `${fmt(record.metrics.initial_rms_mev)} → ${fmt(record.metrics.final_rms_mev)}`, "meV · 起点 → 终点"),
+    scoreCard("视野外信号", `${(100*record.metrics.initial_clipped_fraction).toFixed(2)}% → ${(100*record.metrics.final_clipped_fraction).toFixed(2)}%`, "能量视野裁切"),
+    scoreCard("作答用时", formatDuration(record.duration_ms), `${improvementCount(record)}/${score.hidden_count} 个隐藏项误差减小`));
+  $("attempt-summary").textContent = reviewInsight(record) + (record.scene_changed ? " 作答中改变过场景，图像指标不与标准场景直接比较。" : "");
+  renderReview($("attempt-review"), record);
+  renderTermRows($("attempt-term-rows"), record);
+  $("attempt-details").open = false;
+}
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a,b) => a-b), middle = Math.floor(sorted.length/2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle-1]+sorted[middle])/2;
+}
+function suggestedDrill(records) {
+  const last = records.find(record => !record.assisted && !record.scene_changed);
+  if (!last) return null;
+  const maxOrder = last.question.max_order, candidates = maxOrder*(maxOrder+3)/2;
+  if (candidates <= 1) return null;
+  const choices = [1, 3, 9, 14, 20].filter(count => count < candidates && count <= last.question.term_count);
+  const termCount = choices.at(-1) ?? 1;
+  return {maxOrder, termCount, difficulty: last.question.difficulty, amplitude: last.question.amplitude,
+    reason: `可选：保持最近一次纯盲调的 ${maxOrder} 阶与难度，改为 ${termCount}/${candidates} 项随机稀疏题，以练习判断哪些项不必调。这不是根据能力评分生成的处方。`};
+}
+function renderHistoryReview(record) {
+  $("history-review").hidden = false;
+  $("history-review-title").textContent = `${new Date(record.submitted_at).toLocaleString()} · ${record.question.max_order} 阶 ${record.question.term_count} 项 · ${difficultyLabels[record.question.difficulty] || record.question.difficulty}`;
+  renderReview($("history-review-notes"), record);
+  renderTermRows($("history-review-rows"), record);
+  $("history-review").scrollIntoView({block: "start"});
+  $("history-review-title").focus({preventScroll: true});
+}
+function renderStats(records) {
+  statsRecords = records;
+  const blind = records.filter(record => !record.assisted);
+  const clean = blind.filter(record => !record.scene_changed);
+  const key = record => JSON.stringify([record.stats_version, record.question.max_order,
+    record.question.term_count, record.question.difficulty, record.question.amplitude,
+    record.question.generator_version, record.question.model_version, record.scene.creation]);
+  const comparable = clean.length ? clean.filter(record => key(record) === key(clean[0])) : [];
+  const medianTime = median(comparable.map(record => record.duration_ms));
+  const medianImprovement = median(comparable.map(record => record.score.improvement_ratio));
+  $("career-summary").textContent = records.length
+    ? `已提交 ${records.length} 次，其中纯盲调 ${blind.length} 次。` + (comparable.length >= 2
+      ? `最近同条件 ${comparable.length} 次：系数 RMS 中位改善 ${(medianImprovement*100).toFixed(1)}%，作答用时中位 ${formatDuration(medianTime)}；仅作自我对照。`
+      : "同条件记录不足 2 次，暂不显示趋势或用时比较。")
+    : "尚无已提交的盲调战绩。";
+  currentDrill = suggestedDrill(records);
+  $("drill-recommendation").hidden = !currentDrill;
+  if (currentDrill) $("drill-reason").textContent = currentDrill.reason;
+
+  $("ability-rows").replaceChildren(...names.map(name => {
+    const eligible = comparable.map(record => record.term_outcomes[name]).filter(Boolean);
+    const active = eligible.filter(item => item.active), inactive = eligible.filter(item => !item.active);
+    const direction = active.filter(item => item.first_direction_correct !== null);
+    const improvedRate = active.length ? active.filter(improved).length/active.length : null;
+    const directionRate = direction.length ? direction.filter(item => item.first_direction_correct).length/direction.length : null;
+    const row = document.createElement("tr");
+    const cells = [name, active.length, improvedRate === null ? "—" : `${(100*improvedRate).toFixed(0)}%`,
+      directionRate === null ? "—" : `${(100*directionRate).toFixed(0)}%`,
+      `${inactive.filter(item => item.touched).length}/${inactive.length}`,
+      active.length ? formatDuration(median(active.map(item => item.focus_ms))) : "—",
+      active.length ? median(active.map(item => Math.abs(item.residual))).toFixed(3) : "—"];
+    cells.forEach((value, index) => { const cell = document.createElement(index === 0 ? "th" : "td"); cell.textContent = value; row.append(cell); });
+    return row;
+  }));
+
+  $("history-rows").replaceChildren(...records.slice(0, 30).map(record => {
+    const row = document.createElement("tr"), q = record.question, s = record.score;
+    const date = new Date(record.submitted_at).toLocaleString([], {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"});
+    [date, `${q.max_order} 阶 · ${q.term_count} 项 · ${difficultyLabels[q.difficulty] || q.difficulty}`,
+      record.assisted ? "辅助" : record.scene_changed ? "场景有变" : "纯盲调",
+      `${(s.improvement_ratio*100).toFixed(1)}%`, formatDuration(record.duration_ms),
+      `${improvementCount(record)}/${s.hidden_count}`, s.false_positive_count].forEach(value => {
+      const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+    });
+    const cell = document.createElement("td"), button = document.createElement("button");
+    button.type = "button"; button.textContent = "复盘";
+    button.setAttribute("aria-label", `复盘 ${date} 的练习`);
+    button.addEventListener("click", () => renderHistoryReview(record));
+    cell.append(button); row.append(cell);
+    return row;
+  }));
+  buttonState();
+}
+async function loadStats() {
+  if (!session) return;
+  try { renderStats((await post("/api/stats/list", {session, limit: 500})).attempts); }
+  catch (error) { $("error").textContent = error.message; }
+}
+async function submitAttempt() {
+  if (!attemptActive || attemptPaused || running || dirty || failed || !lastFrame?.question) return;
+  finishWheel();
+  endFocusTerm(selectedTerm);
+  practiceElapsed += performance.now() - practiceStartedAt; practiceStartedAt = null;
+  clearInterval(practiceInterval); practiceInterval = null; renderPracticeTimer(); buttonState();
+  try {
+    const response = await post("/api/stats/submit", {session, attempt_id: attemptId,
+      duration_ms: practiceElapsed, started_at: attemptStartedAt, process: attemptProcess()});
+    attemptActive = false; attemptSubmitted = true; lastSubmittedRecord = response.attempt; renderAttemptResult(response.attempt);
+    updatePages(); buttonState(); await loadStats();
+  } catch (error) {
+    practiceStartedAt = performance.now();
+    focusStartedAt = selectedTerm ? performance.now() : null;
+    practiceInterval = setInterval(renderPracticeTimer, 100);
+    $("error").textContent = error.message; buttonState();
   }
 }
 function download(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; a.click(); }
@@ -414,6 +699,7 @@ function bind() {
     nudgeCoefficient(-Math.sign(event.deltaY));
   }, {capture: true, passive: false});
   document.addEventListener("keydown", event => {
+    if (attemptPaused && event.target.closest?.(".workbench")) { swallow(event); return; }
     if (event.isComposing) return;
     if (wheelTarget) {
       if (['Escape', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(event.key)) {
@@ -462,25 +748,67 @@ function bind() {
   [3, 4, 5].forEach(page => $(`page-${page}`).addEventListener("click", () => setPage(page)));
   $("max-order").addEventListener("change", () => { finishWheel(); updateTermChoices(); });
   $("difficulty").addEventListener("change", updateDifficulty);
-  $("timer-start").addEventListener("click", startPracticeTimer);
-  $("timer-stop").addEventListener("click", stopPracticeTimer);
+  $("timer-start").addEventListener("click", togglePracticePause);
+  $("resume-attempt").addEventListener("click", togglePracticePause);
+  $("submit-attempt").addEventListener("click", submitAttempt);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && attemptActive && !attemptPaused) togglePracticePause();
+    else if (!document.hidden && $("mode").value === "practice" && !attemptActive && !attemptSubmitted && lastFrame?.question) startPracticeTimer();
+  });
+  $("result-next").addEventListener("click", () => {
+    if ($("mode").value !== "practice" || running || !lastSubmittedRecord) return;
+    const {question: q, scene: savedScene} = lastSubmittedRecord;
+    $("max-order").value = String(q.max_order); updateTermChoices();
+    $("term-count").value = String(q.term_count); $("difficulty").value = q.difficulty; updateDifficulty();
+    if (q.difficulty === "custom") $("custom-amplitude").value = String(q.amplitude);
+    const mapping = {"pupil-x": "pupil_x", "pupil-y": "pupil_y", "angular-slit": "angular_slit_half", "y-psf": "y_psf_sigma", "extra-sigma": "extra_sigma_mev", "counts": "expected_counts", "background": "background_per_pixel", "noise-seed": "noise_seed", "field": "energy_half_range_mev"};
+    Object.entries(mapping).forEach(([id, key]) => { $(id).value = savedScene.creation[key]; });
+    $("poisson").checked = savedScene.creation.poisson;
+    $("quality").value = savedScene.creation.n_rays === 16384 ? "preview" : savedScene.creation.n_rays === 262144 ? "high" : "normal";
+    $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; newQuestion();
+  });
+  $("result-continue").addEventListener("click", () => {
+    if (!attemptSubmitted) return;
+    postReviewTune = true; updatePages(); buttonState();
+    $("attempt-summary").textContent += " 现在是提交后的自由复看，后续调节不会改写已保存战绩。";
+    document.querySelector(".workbench").scrollIntoView({block: "start"});
+  });
+  $("result-answer").addEventListener("click", () => { pendingAnswerScroll = true; request("reveal"); });
   $("mode").addEventListener("change", () => {
     finishWheel(); resetPracticeTimer();
     const practice = $("mode").value === "practice";
     $("practice").hidden = !practice; $("reveal").hidden = !practice; $("feedback").hidden = true;
+    $("practice-records").hidden = !practice;
     $("mode-help").textContent = practice ? "滑块是补偿量 c；隐藏像差 a 与它相加。重试只清零补偿，不换题。最高阶设置在重新出题后生效。" : "一至五阶共 20 项，跨页任意叠加。系数单位：meV / 归一化角度幂。";
     activeOrder = practice ? number("max-order") : meta.max_order;
     currentPage = 3; updatePages(); zeroControls(); pendingAction = practice ? "new" : "update"; request();
+    if (practice) loadStats();
   });
-  $("zero").addEventListener("click", () => { zeroControls(); request(); });
+  $("zero").addEventListener("click", () => { zeroControls(true); request(); });
   $("new-question").addEventListener("click", newQuestion);
   $("random-question").addEventListener("click", () => { $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0]; newQuestion(); });
-  $("retry").addEventListener("click", () => { resetPracticeTimer(); zeroControls(); request("retry"); });
+  $("start-drill").addEventListener("click", () => {
+    const drill = currentDrill;
+    if (!drill || $("mode").value !== "practice" || running || dirty || failed) return;
+    if (attemptActive && !confirm("当前未提交的作答会放弃。确定按建议开始新题？")) return;
+    $("max-order").value = String(drill.maxOrder); updateTermChoices();
+    $("term-count").value = String(drill.termCount);
+    $("difficulty").value = drill.difficulty; updateDifficulty();
+    if (drill.difficulty === "custom") $("custom-amplitude").value = String(drill.amplitude);
+    $("seed").value = crypto.getRandomValues(new Uint32Array(1))[0];
+    newQuestion();
+    document.querySelector(".session-panel").scrollIntoView({block: "start"});
+  });
+  $("retry").addEventListener("click", () => { resetPracticeTimer(); updatePages(); zeroControls(); request("retry"); });
   $("reveal").addEventListener("click", () => request(lastFrame?.feedback ? "hide" : "reveal"));
-  ["pupil-x", "pupil-y", "angular-slit", "y-psf", "extra-sigma", "counts", "background", "noise-seed", "poisson", "field", "quality"].forEach(id => $(id).addEventListener("change", () => request()));
+  ["pupil-x", "pupil-y", "angular-slit", "y-psf", "extra-sigma", "counts", "background", "noise-seed", "poisson", "field", "quality"].forEach(id => $(id).addEventListener("change", () => {
+    if (attemptActive) attemptSceneChanged = true;
+    request();
+  }));
   $("gamma").addEventListener("input", () => { $("gamma-value").textContent = Number($("gamma").value).toFixed(2); schedule(); });
   $("lock-intensity").addEventListener("change", () => { lockedVmax = $("lock-intensity").checked ? lastFrame?.display_vmax ?? null : null; request(); });
   $("reset-scene").addEventListener("click", () => {
+    if (attemptActive) attemptSceneChanged = true;
     const mapping = {"pupil-x": "pupil_x", "pupil-y": "pupil_y", "angular-slit": "angular_slit_half", "y-psf": "y_psf_sigma", "extra-sigma": "extra_sigma_mev", "counts": "expected_counts", "background": "background_per_pixel", "noise-seed": "noise_seed", "field": "energy_half_range_mev"};
     Object.entries(mapping).forEach(([id, key]) => $(id).value = meta.defaults[key]); $("poisson").checked = false; $("quality").value = "normal"; request();
   });
@@ -492,12 +820,20 @@ function bind() {
       download(url, "eels-sample.npz"); setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (error) { $("error").textContent = error.message; }
   });
+  $("export-stats").addEventListener("click", async () => {
+    try {
+      const allRecords = (await post("/api/stats/list", {session, limit: "all"})).attempts;
+      const blob = new Blob([JSON.stringify({format: "eels-practice-stats", version: 1, attempts: allRecords}, null, 2)], {type: "application/json"});
+      const url = URL.createObjectURL(blob); download(url, "eels-practice-stats.json");
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (error) { $("error").textContent = error.message; }
+  });
 }
 async function init() {
   try {
     const response = await fetch("/api/meta"); if (!response.ok) throw new Error("无法加载本地模型配置");
     meta = await response.json();
-    if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20 || meta.generator_version !== "eels-exercise-per-term-2" || meta.control_limit !== 300 || meta.difficulties?.hell !== 300 || meta.custom_amplitude_min !== 0.1) throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
+    if (meta.max_order !== 5 || meta.terms?.length !== 20 || meta.powers?.length !== 20 || meta.generator_version !== "eels-exercise-per-term-2" || meta.stats_version !== 2 || meta.control_limit !== 300 || meta.difficulties?.hell !== 300 || meta.custom_amplitude_min !== 0.1) throw new Error("后端版本过旧：请在终端停止并重新运行 python3 run.py，然后强制刷新页面。");
     names = [...tuneUpOrder, ...meta.terms.filter(n => !tuneUpOrder.includes(n))];
     const powers = Object.fromEntries(meta.terms.map((n, i) => [n, meta.powers[i]]));
     const superscript = ["", "", "²", "³", "⁴", "⁵"];
@@ -515,7 +851,7 @@ async function init() {
     const plotObserver = new ResizeObserver(redrawPlots);
     [$("spot"), $("spectrum")].forEach(canvas => plotObserver.observe(canvas));
     window.addEventListener("resize", redrawPlots);
-    $("version").textContent = `模型版本：${meta.model_version} · 出题版本：${meta.generator_version} · NumPy 核心 + 本地 Canvas · 无外部网络请求`;
+    $("version").textContent = `模型版本：${meta.model_version} · 出题版本：${meta.generator_version} · 战绩版本：${meta.stats_version} · NumPy 核心 + 本地 Canvas · 无外部网络请求`;
     request();
   } catch (error) { $("error").textContent = `启动失败：${error.message}`; $("status").textContent = "启动失败"; }
 }
