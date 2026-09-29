@@ -175,6 +175,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(data["status"], "PASS")
             self.assertFalse(data["frozen"])
             self.assertAlmostEqual(data["baseline_fwhm_mev"], 8, delta=0.2)
+            self.assertIn("blind stats SQLite", data["checks"])
 
 
 if __name__ == "__main__":

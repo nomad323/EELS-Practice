@@ -1,7 +1,9 @@
 from pathlib import Path
+import hashlib
+import io
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tools import build_macos, build_windows
 
@@ -46,6 +48,24 @@ class PackagingTests(unittest.TestCase):
 
 
 class MacPackagingTests(unittest.TestCase):
+    def test_sha256_uses_bounded_reads_without_file_digest(self):
+        class TrackedStream(io.BytesIO):
+            sizes = []
+
+            def read(self, size=-1):
+                self.sizes.append(size)
+                return super().read(size)
+
+        with tempfile.TemporaryDirectory() as folder:
+            archive = Path(folder) / "archive.zip"
+            contents = b"eels-practice" * 200000
+            archive.write_bytes(contents)
+            with patch.object(build_macos.hashlib, "file_digest", side_effect=AssertionError("Python 3.10 has no file_digest"), create=True):
+                self.assertEqual(build_macos.sha256_file(archive), hashlib.sha256(contents).hexdigest())
+                stream = TrackedStream(contents)
+                self.assertEqual(build_macos.sha256_file(Mock(open=Mock(return_value=stream))), hashlib.sha256(contents).hexdigest())
+                self.assertTrue(stream.sizes and all(0 < size <= 1024 * 1024 for size in stream.sizes))
+
     def test_native_app_command_and_resources(self):
         with patch.object(build_macos.platform, "machine", return_value="arm64"):
             command = build_macos.pyinstaller_command(Path("output space"), Path("work space"))
